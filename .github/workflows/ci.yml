@@ -89,9 +89,12 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Keeps the Docker Hub repo page (short description + rendered README)
-      # in sync with the source, so the image is actually findable via
-      # Docker Hub / web search instead of showing a blank overview page.
+      # Keeps the Docker Hub repo page (short description + overview) in sync
+      # with the source, so the image is actually findable via Docker Hub /
+      # web search instead of showing a blank overview page. Uses a dedicated
+      # docker/DOCKERHUB.md rather than the full README so the two surfaces
+      # don't duplicate/diverge: GitHub stays the canonical documentation,
+      # Docker Hub gets a short "what/why/30-second run command" overview.
       - name: Sync Docker Hub description
         uses: peter-evans/dockerhub-description@v4
         with:
@@ -101,7 +104,7 @@ jobs:
           short-description: >-
             Virtual RTSP camera CLI/Docker image — loop video files as multiplexed
             RTSP streams for testing DeepStream and other video analytics pipelines.
-          readme-filepath: ./README.md
+          readme-filepath: ./docker/DOCKERHUB.md
 
       - name: Pin today's apt snapshot
         id: apt
