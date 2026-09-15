@@ -459,4 +459,3 @@ def test_doctor_reports_toxiproxy_status(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     result = invoke("doctor")
     assert "OK   toxiproxy: cli: /usr/local/bin/toxiproxy-cli" in result.output
-
