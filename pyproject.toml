@@ -1,6 +1,6 @@
 [project]
 name = "vcam"
-version = "0.2.0"
+version = "0.2.1"
 description = "Virtual RTSP camera CLI: serve looping video files as multiplexed RTSP feeds"
 readme = "README.md"
 requires-python = ">=3.10"
