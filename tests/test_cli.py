@@ -439,3 +439,23 @@ def test_generate_with_auth(tmp_path: Path) -> None:
     stack = load_stack(out)
     assert stack.server.auth is not None
     assert stack.server.auth.username == "admin"
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_reports_toxiproxy_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    # When neither cli nor api is available
+    monkeypatch.setattr("shutil.which", lambda cmd: "/usr/bin/ffmpeg" if "ff" in cmd else None)
+    result = invoke("doctor")
+    assert "toxiproxy: not detected" in result.output
+
+    # When toxiproxy-cli is present
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda cmd: "/usr/local/bin/toxiproxy-cli" if "toxi" in cmd else "/usr/bin/ffmpeg",
+    )
+    result = invoke("doctor")
+    assert "OK   toxiproxy: cli: /usr/local/bin/toxiproxy-cli" in result.output
