@@ -1,14 +1,25 @@
 # virtual-rtsp-camera
 
-![CI](https://img.shields.io/github/actions/workflow/status/antoine-em/virtual-rtsp-camera/ci.yml?branch=main&label=build)
-![Release](https://img.shields.io/github/v/release/antoine-em/virtual-rtsp-camera)
-![License](https://img.shields.io/github/license/antoine-em/virtual-rtsp-camera)
-![Last Commit](https://img.shields.io/github/last-commit/antoine-em/virtual-rtsp-camera)
-![Issues](https://img.shields.io/github/issues/antoine-em/virtual-rtsp-camera)
+![CI](https://img.shields.io/github/actions/workflow/status/antowan/virtual-rtsp-camera/ci.yml?branch=main&label=build)
+![Release](https://img.shields.io/github/v/release/antowan/virtual-rtsp-camera)
+![License](https://img.shields.io/github/license/antowan/virtual-rtsp-camera)
+![Last Commit](https://img.shields.io/github/last-commit/antowan/virtual-rtsp-camera)
+![Issues](https://img.shields.io/github/issues/antowan/virtual-rtsp-camera)
 
-`vcam` — a command line tool that turns local video files into **looping virtual RTSP
-cameras**, so video analytics pipelines (such as DeepStream) can be developed and
-tested without physical cameras.
+`vcam` — a command line tool and Docker image that turns local video files into
+**looping virtual RTSP camera streams**, so video analytics pipelines (such as NVIDIA
+DeepStream, Frigate, or any RTSP-based CCTV/NVR software) can be developed and tested
+without physical IP cameras.
+
+```bash
+docker run --rm -p 8554:8554 \
+  -v "$PWD/cameras.yaml:/vcam/cameras.yaml:ro" \
+  -v "$PWD/videos:/vcam/videos:ro" \
+  konekuto/vcam run
+```
+
+Multi-arch image on Docker Hub: [`konekuto/vcam`](https://hub.docker.com/r/konekuto/vcam)
+(amd64 + arm64, including Jetson/aarch64 edge devices).
 
 - Multiple cameras are served from **one RTSP port**, one path per camera
   (`rtsp://host:8554/cam1`, `rtsp://host:8554/cam2`, …).
@@ -660,9 +671,16 @@ vcam run -c cameras.yaml --mode transcode --encoder h264_nvenc
 
 ## Docker
 
-The repo ships a `Dockerfile` (plus a `docker-compose.yml`) so you can deploy or test
-without a local Python/ffmpeg setup. The image bundles `ffmpeg`, the `vcam` CLI, and the
-MediaMTX binary for the image's architecture (pre-downloaded at build time, so
+Pre-built multi-arch images (amd64 + arm64) are published to Docker Hub as
+[`konekuto/vcam`](https://hub.docker.com/r/konekuto/vcam):
+
+```bash
+docker pull konekuto/vcam:latest   # or pin a version, e.g. konekuto/vcam:0.1.0
+```
+
+The repo also ships a `Dockerfile` (plus a `docker-compose.yml`) so you can build and
+test locally without a Python/ffmpeg setup. The image bundles `ffmpeg`, the `vcam` CLI,
+and the MediaMTX binary for the image's architecture (pre-downloaded at build time, so
 `vcam run` works offline).
 
 Build:
