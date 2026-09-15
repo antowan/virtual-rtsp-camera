@@ -33,6 +33,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.0] - 2026-09-15
+
+### Added
+
+- Optional Toxiproxy Docker Compose profile for TCP network chaos testing,
+  including runtime latency, bandwidth, timeout, and disconnect scenarios.
+- `vcam doctor` reports the optional Toxiproxy CLI or API when available.
+
+---
+
 ## [0.2.0] - 2026-08-30
 
 ### Added
@@ -210,7 +220,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
-[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.2...v0.1.3
