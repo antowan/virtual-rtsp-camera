@@ -24,9 +24,9 @@ vcam = "vcam.cli:main"
 dev = [
     "pytest>=8.0",
     "scapy>=2.5",
-    "ruff>=0.16.6",
+    "ruff>=0.16.7",
     "mypy>=1.14",
-    "types-pyyaml>=6.0",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [tool.ruff]
