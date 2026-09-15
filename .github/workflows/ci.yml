@@ -89,6 +89,20 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Keeps the Docker Hub repo page (short description + rendered README)
+      # in sync with the source, so the image is actually findable via
+      # Docker Hub / web search instead of showing a blank overview page.
+      - name: Sync Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: konekuto/vcam
+          short-description: >-
+            Virtual RTSP camera CLI/Docker image — loop video files as multiplexed
+            RTSP streams for testing DeepStream and other video analytics pipelines.
+          readme-filepath: ./README.md
+
       - name: Pin today's apt snapshot
         id: apt
         run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
