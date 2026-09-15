@@ -5,6 +5,8 @@
 ![License](https://img.shields.io/github/license/antowan/virtual-rtsp-camera)
 ![Last Commit](https://img.shields.io/github/last-commit/antowan/virtual-rtsp-camera)
 ![Issues](https://img.shields.io/github/issues/antowan/virtual-rtsp-camera)
+[![Docker Pulls](https://img.shields.io/docker/pulls/konekuto/vcam)](https://hub.docker.com/r/konekuto/vcam)
+[![Docker Image Size](https://img.shields.io/docker/image-size/konekuto/vcam/latest)](https://hub.docker.com/r/konekuto/vcam)
 
 `vcam` — a command line tool and Docker image that turns local video files into
 **looping virtual RTSP camera streams**, so video analytics pipelines (such as NVIDIA
