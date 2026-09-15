@@ -101,9 +101,11 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: konekuto/vcam
+          # Docker Hub caps short descriptions at 100 bytes; keep this in sync
+          # with that limit or it gets silently truncated mid-word.
           short-description: >-
-            Virtual RTSP camera CLI/Docker image — loop video files as multiplexed
-            RTSP streams for testing DeepStream and other video analytics pipelines.
+            Virtual RTSP camera simulator: loop video files into RTSP streams for
+            testing analytics pipelines
           readme-filepath: ./docker/DOCKERHUB.md
 
       - name: Pin today's apt snapshot
