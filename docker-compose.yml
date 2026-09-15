@@ -19,6 +19,19 @@ services:
     restart: unless-stopped
     # command: run --ntp-server 192.168.198.151
 
+  # Optional TCP chaos testing proxy (Toxiproxy).
+  # Run with: docker compose --profile chaos up -d
+  # Creates a TCP proxy on :8654 forwarding to vcam:8554 and exposes HTTP API on :8474.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.11.0
+    container_name: vcam-toxiproxy
+    ports:
+      - "8474:8474"   # Toxiproxy HTTP control API
+      - "8654:8654"   # Impaired RTSP TCP proxy port
+    depends_on:
+      - vcam
+    profiles: ["chaos"]
+
   # Unit tests:  docker compose --profile test run --rm test
   test:
     build:

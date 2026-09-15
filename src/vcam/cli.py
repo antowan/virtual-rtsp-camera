@@ -1228,6 +1228,32 @@ def doctor(
     except PcapError as exc:
         console.print(f"[yellow]WARN[/] pcap backend: {exc}")
 
+    # Chaos testing (Toxiproxy) is optional: report CLI and API if reachable.
+    toxi_cli = shutil.which("toxiproxy-cli")
+    toxi_api_running = False
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen("http://127.0.0.1:8474/version", timeout=0.5) as resp:
+            if resp.status == 200:
+                toxi_api_running = True
+    except Exception:
+        pass
+
+    if toxi_cli or toxi_api_running:
+        status_parts = []
+        if toxi_cli:
+            status_parts.append(f"cli: {toxi_cli}")
+        if toxi_api_running:
+            status_parts.append("api: http://127.0.0.1:8474")
+        joined = ", ".join(status_parts)
+        console.print(f"[green]OK[/]   toxiproxy: {joined} (optional chaos testing)")
+    else:
+        console.print(
+            "[dim]INFO  toxiproxy: not detected (optional for TCP chaos testing; "
+            "run `docker compose --profile chaos up -d`)[/]"
+        )
+
     if not ok:
         raise typer.Exit(1)
 
