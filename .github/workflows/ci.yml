@@ -96,7 +96,7 @@ jobs:
       # don't duplicate/diverge: GitHub stays the canonical documentation,
       # Docker Hub gets a short "what/why/30-second run command" overview.
       - name: Sync Docker Hub description
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
