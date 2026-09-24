@@ -33,6 +33,18 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.3.1] - 2026-09-24
+
+### Fixed
+
+- Replay now matches UDP RTP packets against the source and destination
+  endpoints negotiated in the RTSP handshake, preventing unrelated
+  colliding-port traffic from contaminating a track.
+- `SETUP` requests for an unknown track URI now return `404` instead of
+  silently configuring the first track.
+
+---
+
 ## [0.3.0] - 2026-09-15
 
 ### Added
@@ -220,7 +232,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
-[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.3...v0.1.4
