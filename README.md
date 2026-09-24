@@ -232,7 +232,8 @@ packet-level artifacts you captured it for.
 What a capture needs to contain:
 
 - **The RTSP handshake**, ideally. `vcam` reads the `DESCRIBE` response for the SDP and the
-  `SETUP` exchanges for the RTP ports or interleaved channels, so it never has to guess.
+  `SETUP` exchanges for the RTP ports or interleaved channels. For UDP, it matches packets to
+  the negotiated source and destination endpoints, so unrelated traffic is not replayed.
 - If you only have the media, pass the session description yourself with
   `--sdp camera.sdp`; `vcam` then finds the RTP streams heuristically.
 

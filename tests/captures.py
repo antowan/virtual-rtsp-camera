@@ -108,6 +108,7 @@ def write_udp_capture(
     interval: float = 0.04,
     start: float = 1_700_000_000.0,
     with_handshake: bool = True,
+    extra_udp_datagrams: list[tuple[bytes, tuple[str, int], tuple[str, int]]] | None = None,
 ) -> list[bytes]:
     """RTSP handshake negotiating RTP/AVP over UDP, followed by the RTP stream."""
     packets = packets if packets is not None else rtp_series(10)
@@ -158,6 +159,13 @@ def write_udp_capture(
 
         for index, packet in enumerate(packets):
             writer.write_udp(packet, start + index * interval, src=SERVER_RTP, dst=CLIENT_RTP)
+        for index, (packet, src, dst) in enumerate(extra_udp_datagrams or []):
+            writer.write_udp(
+                packet,
+                start + (len(packets) + index) * interval,
+                src=src,
+                dst=dst,
+            )
     return packets
 
 

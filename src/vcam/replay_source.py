@@ -553,10 +553,16 @@ def _fill_tracks(
         for datagram in datagrams:
             if datagram.proto != "udp":
                 continue
-            if datagram.src[1] == server_port or (
-                client_port is not None and datagram.dst[1] == client_port
+            if handshake.server is None or handshake.client is None:
+                continue
+            if (
+                datagram.src[0] != handshake.server[0]
+                or datagram.dst[0] != handshake.client[0]
+                or (server_port is not None and datagram.src[1] != server_port)
+                or (client_port is not None and datagram.dst[1] != client_port)
             ):
-                _register_packet(track, datagram.ts, datagram.payload)
+                continue
+            _register_packet(track, datagram.ts, datagram.payload)
 
 
 def _heuristic_tracks(

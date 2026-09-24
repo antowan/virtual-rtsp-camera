@@ -594,11 +594,15 @@ class ReplayServer:
     def _track_for(self, uri: str | None) -> ReplayTrack | None:
         if not uri:
             return None
+        target = uri.split("?", 1)[0].split("#", 1)[0].rstrip("/")
         for track in self.source.tracks:
-            if uri.rstrip("/").endswith(track.control):
+            parent, separator, _ = target.rpartition("/")
+            if separator and target.endswith(track.control) and self._matches_path(parent):
                 return track
         # A reader that sets up the aggregate URL gets the first track.
-        return self.source.tracks[0] if self.source.tracks else None
+        if self._matches_path(target):
+            return self.source.tracks[0] if self.source.tracks else None
+        return None
 
     def _setup(
         self, connection: _Connection, message: RtspMessage, cseq: str
