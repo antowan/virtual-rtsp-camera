@@ -156,6 +156,21 @@ def test_describe_on_an_unknown_path_is_404(udp_capture, server_factory) -> None
         client.close()
 
 
+def test_setup_on_an_unknown_track_is_404(udp_capture, server_factory) -> None:
+    path, _ = udp_capture
+    server = server_factory(path)
+    client = RtspClient("127.0.0.1", server.port, "replay")
+    try:
+        response = client.request(
+            "SETUP",
+            f"{client.url}/trackID=999",
+            Transport="RTP/AVP/TCP;unicast;interleaved=0-1",
+        )
+        assert response.status == 404
+    finally:
+        client.close()
+
+
 def test_unknown_method_is_501(udp_capture, server_factory) -> None:
     path, _ = udp_capture
     server = server_factory(path)

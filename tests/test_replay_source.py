@@ -101,6 +101,23 @@ def test_udp_capture_round_trips_every_packet(tmp_path: Path) -> None:
     assert source.tracks[0].clock_rate == 90000
 
 
+def test_udp_capture_excludes_packets_outside_the_negotiated_endpoints(tmp_path: Path) -> None:
+    path = tmp_path / "udp-with-collisions.pcap"
+    packets = rtp_series(3)
+    write_udp_capture(
+        path,
+        packets=packets,
+        extra_udp_datagrams=[
+            (rtp_packet(sequence=2000, timestamp=100_000), SERVER_RTP, ("192.168.1.99", 60000)),
+            (rtp_packet(sequence=2001, timestamp=103_000), ("192.168.1.99", 40000), CLIENT_RTP),
+        ],
+    )
+
+    source = replay_source.load(path)
+
+    assert [entry.data for entry in source.timeline] == packets
+
+
 def test_interleaved_capture_round_trips_every_packet(tmp_path: Path) -> None:
     path = tmp_path / "tcp.pcap"
     packets = write_interleaved_capture(path)
