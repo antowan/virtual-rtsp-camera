@@ -597,11 +597,7 @@ class ReplayServer:
         target = uri.split("?", 1)[0].split("#", 1)[0].rstrip("/")
         for track in self.source.tracks:
             parent, separator, _ = target.rpartition("/")
-            if (
-                separator
-                and target.endswith(track.control)
-                and self._matches_path(parent)
-            ):
+            if separator and target.endswith(track.control) and self._matches_path(parent):
                 return track
         # A reader that sets up the aggregate URL gets the first track.
         if self._matches_path(target):
