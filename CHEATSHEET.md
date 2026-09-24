@@ -1,7 +1,7 @@
 # vcam cheat sheet
 
 One-page map of what `vcam` is for and the commands that get you there.
-Full details live in [README.md](README.md).
+Full details live in [README.md](README.md) and the [docs/](docs/) guides.
 
 ## The mental model
 

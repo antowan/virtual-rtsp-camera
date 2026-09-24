@@ -61,7 +61,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `vcam replay` serves a captured RTSP/RTP session back byte for byte, over
   interleaved TCP or UDP, preserving the original payloads and inter-packet
-  timing. Captures are recorded with `tcpdump`; see the README for the workflow.
+  timing. Captures are recorded with `tcpdump`; see docs/capture-replay.md for the workflow.
 
 ### Changed
 
