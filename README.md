@@ -161,6 +161,7 @@ file, `start_offset`, legacy manifests, and the MediaMTX binary resolution order
 | [Network chaos](docs/network-chaos.md) | Toxiproxy sidecar: latency, bandwidth, stalls, disconnects |
 | [Configuration](docs/configuration.md) | full `cameras.yaml` reference, auth, health file, server binary |
 | [Clock sync](docs/clock-sync.md) | RTCP NTP timestamps, container time sync, skew testing |
+| [Shared-clock prototype](docs/sync-prototype.md) | experimental synthetic multi-view playback, looping, and isolated recovery; not a `vcam run` feature |
 | [Running as a service](docs/service.md) | systemd (Linux) and launchd (macOS) installation |
 | [Docker](docs/docker.md) | image details, compose, multi-arch builds, aarch64/Jetson |
 | [Cheat sheet](CHEATSHEET.md) | one-page command map |

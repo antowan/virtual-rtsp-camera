@@ -16,6 +16,8 @@ dependencies = [
 # Capture replay only. Kept out of the base install so the nine commands that
 # never touch a capture file do not pay for ~12 MB of scapy.
 replay = ["scapy>=2.5"]
+# Standalone synchronization experiments only; not used by `vcam run`.
+prototype = ["av>=16,<17", "numpy>=1.26"]
 
 [project.scripts]
 vcam = "vcam.cli:main"
@@ -64,3 +66,4 @@ packages = ["src/vcam"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["."]
