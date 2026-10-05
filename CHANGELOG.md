@@ -33,6 +33,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.1] - 2026-10-05
+
+### Changed
+
+- Update the Ruff development dependency from 0.16.8 to 0.16.9 (#24).
+- Update the Docker Hub description GitHub Action from v4 to v5 (#21).
+- Retain the synchronized H.264 playback integration released in 0.4.0.
+
+---
+
 ## [0.4.0] - 2026-10-05
 
 ### Added
@@ -266,7 +276,8 @@ it has not been performed as part of this release.
 ---
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
-[Unreleased]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.2.0...v0.3.0
