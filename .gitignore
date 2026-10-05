@@ -12,6 +12,7 @@ tmp/
 .vcam/
 *.mediamtx.yml
 health.json
+.sync-prototype/
 
 # Media / scratch
 videos/

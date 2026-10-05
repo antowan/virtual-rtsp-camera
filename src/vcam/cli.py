@@ -235,6 +235,7 @@ def _apply_overrides(
             video=video,
             simulation=simulation,
         )
+        CameraStack.model_validate(stack.model_dump())
     except ValueError as exc:
         raise _fail(str(exc)) from exc
 
@@ -597,6 +598,13 @@ def _print_dry_run(stack: CameraStack, ffmpeg_log_level: str) -> None:
 
     console.print("[bold]# publishers[/]")
     for camera in stack.enabled_cameras:
+        if camera.sync_group is not None:
+            console.print(
+                f"[dim]# {camera.name} -> {stack.read_url(camera)}[/]\n"
+                f"synchronized H.264 copy publisher (group={camera.sync_group}); "
+                "source admission and shared startup barrier occur on run"
+            )
+            continue
         info = try_probe(camera.source) if camera.source.is_file() else None
         command = build_publish_command(
             camera,
@@ -621,15 +629,19 @@ def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
         table.add_column("url")
         table.add_column("mode")
         table.add_column("sim")
+        if any(camera.sync_group is not None for camera in stack.cameras):
+            table.add_column("sync group")
         table.add_column("source", style="dim")
         for runtime in runtimes:
-            table.add_row(
+            row = [
                 runtime.camera.name,
                 runtime.read_url_with_credentials,
                 runtime.mode.value,
                 _simulation_label(runtime.camera),
-                str(runtime.camera.source),
-            )
+            ]
+            if any(camera.sync_group is not None for camera in stack.cameras):
+                row.append(runtime.camera.sync_group or "-")
+            table.add_row(*row, str(runtime.camera.source))
         console.print(table)
     _print_replay_table(stack)
     if stack.server.auth is not None:
@@ -673,15 +685,22 @@ def _print_camera_table(stack: CameraStack, host: str | None = None) -> None:
     table.add_column("url")
     table.add_column("mode")
     table.add_column("sim")
+    if any(camera.sync_group is not None for camera in stack.cameras):
+        table.add_column("sync group")
     table.add_column("loop")
     table.add_column("offset")
     table.add_column("source", style="dim")
     for camera in stack.cameras:
-        table.add_row(
+        row = [
             camera.name if camera.enabled else f"[strike]{camera.name}[/]",
             stack.read_url(camera, host),
             camera.mode.value,
             _simulation_label(camera),
+        ]
+        if any(item.sync_group is not None for item in stack.cameras):
+            row.append(camera.sync_group or "-")
+        table.add_row(
+            *row,
             "yes" if camera.loop else "no",
             f"{camera.start_offset:g}s",
             str(camera.source),

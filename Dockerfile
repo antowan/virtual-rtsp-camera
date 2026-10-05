@@ -28,8 +28,9 @@ WORKDIR /src
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 COPY tests ./tests
-RUN uv sync --frozen
-CMD ["uv", "run", "pytest"]
+COPY scripts ./scripts
+RUN uv sync --frozen --extra prototype
+CMD ["uv", "run", "--extra", "prototype", "pytest"]
 
 # ---------------------------------------------------------------------------
 # Runtime
@@ -62,10 +63,10 @@ WORKDIR /vcam
 
 # pip is only needed to install the wheel; dropping it from the runtime image
 # removes a package that regularly carries advisories and is never used here.
-# The replay extra (scapy) is installed here because capture replay is a
-# first-class use case in the container; the base wheel leaves it out.
+# Replay (scapy) and synchronized publishing (PyAV) are available in the
+# container; the base wheel leaves these opt-in backends out.
 COPY --from=build /out/vcam-*.whl /tmp/wheel/
-RUN pip install --no-cache-dir "$(ls /tmp/wheel/vcam-*.whl)[replay]" \
+RUN pip install --no-cache-dir "$(ls /tmp/wheel/vcam-*.whl)[replay,sync]" \
     && rm -rf /tmp/wheel \
     && pip uninstall -y pip
 

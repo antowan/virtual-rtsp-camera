@@ -58,10 +58,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }}
+        run: uv sync --extra prototype --python ${{ matrix.python-version }}
 
       - name: Run tests
-        run: uv run --python ${{ matrix.python-version }} pytest
+        run: uv run --extra prototype --python ${{ matrix.python-version }} pytest
 
   # Push konekuto/vcam:main to Docker Hub on every merge to main.
   # Requires DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets.
@@ -159,6 +159,11 @@ jobs:
 
       - name: Smoke-test the image
         run: docker run --rm vcam:ci --version
+
+      - name: Verify packaged synchronization backend
+        run: >-
+          docker run --rm --entrypoint python vcam:ci -c
+          "from vcam.synchronized import media_backend; print(media_backend().__version__)"
 
       # Fails only on vulnerabilities that have a fixed package available, so
       # unfixable base-image CVEs don't permanently block the pipeline.

@@ -33,6 +33,7 @@ cameras:
     start_offset: 0            # seconds to seek into the file
     transport: tcp             # publishing transport
     audio: false
+    # sync_group: scene        # opt-in shared scene clock; see synchronized-playback.md
 
   - name: cam2
     source: videos/cam2.mp4
@@ -74,6 +75,13 @@ uv run vcam list -c streams.yaml
 ```
 
 ## How `start_offset` behaves
+
+To align rather than de-sync a set of cameras, assign the same `sync_group` to
+at least two enabled cameras. Synchronized groups require compatible H.264
+constant-frame-rate assets, matching rate/frame count, looping copy mode over
+TCP, and no offset, audio, encoding overrides or simulations. Configuration is
+validated again after CLI overrides. See [Synchronized playback](synchronized-playback.md)
+for asset admission, recovery, health reporting and examples.
 
 `start_offset` is applied **once, at startup**: the camera skips into the file, and every
 later loop replays the file from the beginning. The feed therefore stays permanently
