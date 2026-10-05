@@ -33,6 +33,40 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.4.0] - 2026-10-05
+
+### Added
+
+- Opt-in synchronized H.264 copy playback through `sync_group` in the VCAM
+  package, configuration and supervisor. Compatible constant-frame-rate assets
+  share a monotonic scene clock across loops and recover isolated publishers at
+  admitted IDR points without restarting healthy peers.
+- Source admission, bounded indexing, startup barriers, progress watchdogs and
+  per-member synchronization health diagnostics. Install `vcam[sync]` for the
+  optional Python backend; Docker includes it.
+- Controlled 44-second application tests covering ten scene wraps, late joins,
+  reconnects, B-frame worker exits and suspended-worker recovery. The decoded
+  receipt spread gate remains 33.333 ms; this is not a universal skew SLA.
+
+### Changed
+
+- README reorganized as a landing page with dedicated configuration, Docker,
+  service and testing guides.
+
+### Fixed
+
+- Synchronized worker shutdown uses isolated command pipes instead of shared
+  stop-event locks that could deadlock after a worker was killed.
+- Startup readiness waits continue servicing active synchronization groups.
+- Diagnostic telemetry is drained before watchdog evaluation and final evidence
+  collection.
+
+Mac-local application acceptance and Docker runtime smoke passed. ICO500
+deployment qualification follows after redeploying this newly tagged image;
+it has not been performed as part of this release.
+
+---
+
 ## [0.3.1] - 2026-09-24
 
 ### Fixed
@@ -232,7 +266,8 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ---
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
-[Unreleased]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.1.4...v0.2.0

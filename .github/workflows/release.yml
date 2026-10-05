@@ -31,10 +31,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --python ${{ matrix.python-version }}
+        run: uv sync --extra prototype --python ${{ matrix.python-version }}
 
       - name: Run tests
-        run: uv run --python ${{ matrix.python-version }} pytest
+        run: uv run --extra prototype --python ${{ matrix.python-version }} pytest
 
   # ── 2. Build the wheel + sdist ─────────────────────────────────────────────
   build:
