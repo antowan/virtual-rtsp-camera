@@ -178,6 +178,31 @@ class CameraSpec(BaseModel):
     )
     video: VideoSettings = Field(default_factory=VideoSettings)
     simulation: SimulationSpec = Field(default_factory=SimulationSpec)
+    sync_group: str | None = Field(
+        default=None, description="Opt-in shared scene clock for compatible H.264 copy cameras."
+    )
+
+    @model_validator(mode="after")
+    def _check_sync_settings(self) -> CameraSpec:
+        if self.sync_group is None:
+            return self
+        if not CAMERA_NAME_RE.fullmatch(self.sync_group):
+            raise ValueError("sync_group must be a valid nonempty group name")
+        if (
+            self.mode not in (StreamMode.AUTO, StreamMode.COPY)
+            or not self.loop
+            or not self.realtime
+            or self.start_offset != 0
+            or self.transport is not Transport.TCP
+            or self.audio
+            or self.video != VideoSettings()
+            or self.simulation != SimulationSpec()
+        ):
+            raise ValueError(
+                "synchronized cameras require looping realtime H.264 copy over TCP, "
+                "zero start_offset, no audio, and default video/simulation settings"
+            )
+        return self
 
     @field_validator("name")
     @classmethod
@@ -312,6 +337,16 @@ class CameraStack(BaseModel):
 
     @model_validator(mode="after")
     def _check_unique_paths(self) -> CameraStack:
+        groups: dict[str, list[CameraSpec]] = {}
+        for camera in self.enabled_cameras:
+            if camera.sync_group is not None:
+                groups.setdefault(camera.sync_group, []).append(camera)
+        for name, members in groups.items():
+            if len(members) < 2:
+                raise ValueError(f"sync_group {name!r} requires at least two enabled cameras")
+            for member in members:
+                if sum(camera.name == member.name for camera in self.enabled_cameras) != 1:
+                    raise ValueError("synchronized camera names must be unique across all ports")
         seen: set[tuple[int, str]] = set()
         for camera in self.cameras:
             key = (camera.port or self.server.rtsp_port, camera.name)

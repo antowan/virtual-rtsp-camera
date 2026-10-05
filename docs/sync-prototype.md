@@ -1,5 +1,12 @@
 # Shared-clock playback prototype
 
+The original harness described here remains a standalone diagnostic experiment.
+The reusable scene clock and the admitted copy publisher are now integrated into
+`vcam run` through opt-in camera synchronization groups. For the packaged feature,
+configuration and Docker usage, see [Synchronized playback](synchronized-playback.md).
+The harness's generated assets, SEI instrumentation and fault injection are not
+part of the production publisher.
+
 This is a **standalone feasibility experiment**, not a new `vcam run` mode or a
 production synchronization guarantee. It publishes three generated H.264 views
 through an owned, loopback-only MediaMTX instance and checks their decoded scene
@@ -303,5 +310,5 @@ the timeout is not merely an elapsed-time assertion after a potentially hung
 function returns. Unit tests also exercise whole-scene lag, stale joins,
 post-recovery failures, missing terminal telemetry and cleanup errors.
 
-The existing `vcam run` commands, camera schema, independent FFmpeg command
-builder, and capture replay semantics are unchanged.
+Existing independent FFmpeg cameras and capture replay semantics are unchanged.
+The opt-in `sync_group` camera field selects the integrated shared-clock backend.

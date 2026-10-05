@@ -18,6 +18,8 @@ dependencies = [
 replay = ["scapy>=2.5"]
 # Standalone synchronization experiments only; not used by `vcam run`.
 prototype = ["av>=16,<17", "numpy>=1.26"]
+# Opt-in shared-clock H.264 publishers; independent cameras do not import PyAV.
+sync = ["av>=16,<17"]
 
 [project.scripts]
 vcam = "vcam.cli:main"

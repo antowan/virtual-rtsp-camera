@@ -1053,6 +1053,9 @@ prototype = [
 replay = [
     { name = "scapy" },
 ]
+sync = [
+    { name = "av" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1066,6 +1069,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'prototype'", specifier = ">=16,<17" },
+    { name = "av", marker = "extra == 'sync'", specifier = ">=16,<17" },
     { name = "numpy", marker = "extra == 'prototype'", specifier = ">=1.26" },
     { name = "pydantic", specifier = ">=2.13.5" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -1073,7 +1077,7 @@ requires-dist = [
     { name = "scapy", marker = "extra == 'replay'", specifier = ">=2.5" },
     { name = "typer", specifier = ">=0.27.2" },
 ]
-provides-extras = ["replay", "prototype"]
+provides-extras = ["replay", "prototype", "sync"]
 
 [package.metadata.requires-dev]
 dev = [

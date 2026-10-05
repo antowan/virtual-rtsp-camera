@@ -31,6 +31,7 @@ from .models import (
 )
 from .probe import MediaInfo, try_probe
 from .service import vcam_command
+from .synchronized import SyncGroup, SyncMember, admit_source
 
 logger = logging.getLogger("vcam")
 
@@ -183,7 +184,7 @@ class CameraRuntime:
     """Credential-free URL, safe for logs and the health file."""
     read_url_with_credentials: str
     """URL a reader can use directly; carries credentials when auth is enabled."""
-    process: ManagedProcess
+    process: ManagedProcess | SyncMember
     scheduler: SimulationScheduler | None = None
     """Drives the dropout cycle of a flaky camera, None otherwise."""
 
@@ -258,6 +259,9 @@ class SimulationScheduler:
 
     def __init__(self, runtime: CameraRuntime, spec: SimulationSpec, now: float) -> None:
         self.runtime = runtime
+        if isinstance(runtime.process, SyncMember):
+            raise SupervisorError("simulations are not supported on synchronized publishers")
+        self.process = runtime.process
         self.spec = spec
         self.state = "up"  # "up" | "event"
         self._next_event = now + spec.interval
@@ -280,15 +284,15 @@ class SimulationScheduler:
             self.runtime.camera.name,
             self.spec.duration,
         )
-        self.runtime.process.suspended = True
-        self.runtime.process.stop()
+        self.process.suspended = True
+        self.process.stop()
         self.state = "event"
         self._next_event = now + self.spec.duration
 
     def _end(self, now: float) -> None:
         logger.info("%s: [simulation] stream restored", self.runtime.camera.name)
-        self.runtime.process.suspended = False
-        self.runtime.process.start()
+        self.process.suspended = False
+        self.process.start()
         self.state = "up"
         self._next_event = now + self.spec.interval
 
@@ -325,6 +329,7 @@ class Supervisor:
         self.servers: list[ManagedProcess] = []
         self.runtimes: list[CameraRuntime] = []
         self.replays: list[ReplayRuntime] = []
+        self.sync_groups: list[SyncGroup] = []
         self._stop = threading.Event()
 
     # -- lifecycle -----------------------------------------------------------
@@ -341,6 +346,8 @@ class Supervisor:
 
     def prepare(self) -> None:
         """Validate sources, plan instances and render server configs."""
+        # Library callers and CLI overrides can mutate models after validation.
+        self.stack = CameraStack.model_validate(self.stack.model_dump())
         cameras = self.stack.enabled_cameras
         replays = self.stack.enabled_replays
         if not cameras and not replays:
@@ -370,17 +377,44 @@ class Supervisor:
                 )
             )
 
+        sync_sources = {
+            camera.name: admit_source(camera.source)
+            for camera in cameras
+            if camera.sync_group is not None
+        }
+        grouped: dict[str, list[CameraSpec]] = {}
+        for camera in cameras:
+            if camera.sync_group is not None:
+                grouped.setdefault(camera.sync_group, []).append(camera)
+        sync_members = {}
+        for name, members in grouped.items():
+            group = SyncGroup(
+                name,
+                [
+                    (camera.name, sync_sources[camera.name], self.stack.publish_url(camera))
+                    for camera in members
+                ],
+                self.max_restarts,
+            )
+            self.sync_groups.append(group)
+            sync_members.update({member.name: member for member in group.members})
+
         for instance in self.instances:
             for camera in instance.cameras:
                 info = try_probe(camera.source, ffprobe=self.ffprobe)
-                mode = effective_mode(camera, info)
-                command = build_publish_command(
-                    camera,
-                    self.stack.publish_url(camera),
-                    info=info,
-                    ffmpeg=self.ffmpeg,
-                    log_level=self.ffmpeg_log_level,
-                )
+                if camera.sync_group is not None:
+                    mode = StreamMode.COPY
+                    publisher: ManagedProcess | SyncMember = sync_members[camera.name]
+                else:
+                    mode = effective_mode(camera, info)
+                    command = build_publish_command(
+                        camera,
+                        self.stack.publish_url(camera),
+                        info=info,
+                        ffmpeg=self.ffmpeg,
+                        log_level=self.ffmpeg_log_level,
+                    )
+                    publisher = ManagedProcess(name=camera.name, kind="publisher", command=command)
                 runtime = CameraRuntime(
                     camera=camera,
                     instance=instance,
@@ -388,7 +422,7 @@ class Supervisor:
                     info=info,
                     read_url=self.stack.read_url(camera, with_credentials=False),
                     read_url_with_credentials=self.stack.read_url(camera),
-                    process=ManagedProcess(name=camera.name, kind="publisher", command=command),
+                    process=publisher,
                 )
                 if camera.simulation.mode is SimulationMode.FLAKY:
                     runtime.scheduler = SimulationScheduler(
@@ -420,8 +454,13 @@ class Supervisor:
     def run(self) -> int:
         """Start everything and block until interrupted. Returns an exit code."""
         self._install_signal_handlers()
-        self.prepare()
+        try:
+            self.prepare()
+            return self._serve()
+        finally:
+            self.shutdown()
 
+    def _serve(self) -> int:
         for server in self.servers:
             if not server.start():
                 self.shutdown()
@@ -441,7 +480,10 @@ class Supervisor:
                 )
 
         for runtime in self.runtimes:
-            runtime.process.start()
+            if isinstance(runtime.process, ManagedProcess):
+                runtime.process.start()
+        for group in self.sync_groups:
+            group.start(service=self._tick_sync_groups)
 
         for replay in self.replays:
             replay.process.start()
@@ -461,6 +503,7 @@ class Supervisor:
 
         while not self._stop.is_set():
             now = time.monotonic()
+            self._tick_sync_groups()
 
             for process in self._all_processes():
                 if process.running:
@@ -501,7 +544,7 @@ class Supervisor:
                 self._write_health()
                 last_health = now
 
-            self._stop.wait(1.0)
+            self._stop.wait(0.1 if self.sync_groups else 1.0)
 
         self.shutdown()
         return 0
@@ -509,28 +552,51 @@ class Supervisor:
     def _all_processes(self) -> list[ManagedProcess]:
         return [
             *self.servers,
-            *(runtime.process for runtime in self.runtimes),
+            *(
+                runtime.process
+                for runtime in self.runtimes
+                if isinstance(runtime.process, ManagedProcess)
+            ),
             *(replay.process for replay in self.replays),
         ]
 
     def shutdown(self) -> None:
         self._stop.set()
-        for replay in self.replays:
-            replay.process.stop()
-        for runtime in self.runtimes:
-            runtime.process.stop()
-        for server in self.servers:
-            server.stop()
+        actions = [
+            *(replay.process.stop for replay in self.replays),
+            *(
+                runtime.process.stop
+                for runtime in self.runtimes
+                if isinstance(runtime.process, ManagedProcess)
+            ),
+            *(group.stop for group in self.sync_groups),
+            *(server.stop for server in self.servers),
+        ]
+        errors = []
+        for action in actions:
+            try:
+                action()
+            except (OSError, SupervisorError) as exc:
+                logger.error("resource cleanup failed: %s", exc)
+                errors.append(str(exc))
         if self.health_file is not None:
             self._write_health()
+        if errors:
+            raise SupervisorError("shutdown failed: " + "; ".join(errors))
 
     # -- verification & health ----------------------------------------------
+
+    def _tick_sync_groups(self) -> None:
+        for group in self.sync_groups:
+            if group.epoch_ns:
+                group.tick(time.monotonic())
 
     def _verify_streams(self, timeout: float = 20.0) -> None:
         deadline = time.monotonic() + timeout
         pending = {runtime.camera.name: runtime for runtime in self.runtimes}
 
         while pending and time.monotonic() < deadline:
+            self._tick_sync_groups()
             for instance in self.instances:
                 ready = _ready_paths(instance.api_url)
                 for name in list(pending):
@@ -538,14 +604,16 @@ class Supervisor:
                         logger.info("%s: ready at %s", name, pending[name].read_url)
                         del pending[name]
             if pending:
-                time.sleep(0.5)
+                time.sleep(0.1 if self.sync_groups else 0.5)
 
         for name in pending:
             logger.warning("%s: not publishing yet (check the ffmpeg log above)", name)
 
     def _verify_replays(self, timeout: float = 15.0) -> None:
         for replay in self.replays:
-            if _wait_for_port("127.0.0.1", replay.replay.port, timeout=timeout):
+            if _wait_for_port(
+                "127.0.0.1", replay.replay.port, timeout=timeout, service=self._tick_sync_groups
+            ):
                 logger.info("%s: ready at %s", replay.replay.name, replay.read_url)
             else:
                 logger.warning(
@@ -576,6 +644,7 @@ class Supervisor:
                     "restarts": runtime.process.restarts,
                     "last_exit_code": runtime.process.last_exit_code,
                     "simulation": runtime.camera.simulation.mode.value,
+                    **(runtime.process.health() if isinstance(runtime.process, SyncMember) else {}),
                     **(
                         {"simulation_state": runtime.scheduler.state_label}
                         if runtime.scheduler is not None
@@ -596,6 +665,22 @@ class Supervisor:
                 }
                 for replay in self.replays
             ],
+            **(
+                {
+                    "sync_groups": [
+                        {
+                            "name": group.name,
+                            "epoch_ns": group.epoch_ns or None,
+                            "rate": str(group.members[0].source.rate),
+                            "frames": group.members[0].source.frames,
+                            "lead_frames": group.lead,
+                        }
+                        for group in self.sync_groups
+                    ]
+                }
+                if self.sync_groups
+                else {}
+            ),
         }
 
     def _write_health(self) -> None:
@@ -610,14 +695,18 @@ class Supervisor:
             logger.error("could not write health file: %s", exc)
 
 
-def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> bool:
+def _wait_for_port(
+    host: str, port: int, timeout: float = 10.0, service: Callable[[], None] | None = None
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if service is not None:
+            service()
         try:
             with socket.create_connection((host, port), timeout=1.0):
                 return True
         except OSError:
-            time.sleep(0.2)
+            time.sleep(0.1 if service is not None else 0.2)
     return False
 
 

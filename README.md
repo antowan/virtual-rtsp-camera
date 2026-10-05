@@ -17,6 +17,12 @@
 analytics pipelines — NVIDIA DeepStream, Frigate, or any RTSP-based CCTV/NVR software —
 can be developed and tested without physical IP cameras.
 
+For coordinated multi-view scenes, opt in to
+[synchronized H.264 copy playback](docs/synchronized-playback.md) with `sync_group`
+in your camera configuration. Compatible group members share a monotonic scene
+clock across loops and rejoin the current scene after an isolated publisher
+failure. Independent cameras remain the default.
+
 ```bash
 # no clip handy? generate a few throwaway samples first:
 docker run --rm -v "$PWD/videos:/vcam/videos" \
@@ -161,7 +167,8 @@ file, `start_offset`, legacy manifests, and the MediaMTX binary resolution order
 | [Network chaos](docs/network-chaos.md) | Toxiproxy sidecar: latency, bandwidth, stalls, disconnects |
 | [Configuration](docs/configuration.md) | full `cameras.yaml` reference, auth, health file, server binary |
 | [Clock sync](docs/clock-sync.md) | RTCP NTP timestamps, container time sync, skew testing |
-| [Shared-clock prototype](docs/sync-prototype.md) | experimental synthetic multi-view playback, looping, and isolated recovery; not a `vcam run` feature |
+| [Synchronized playback](docs/synchronized-playback.md) | opt-in `vcam run` shared scene groups, compatible assets, isolated recovery and Docker usage |
+| [Shared-clock experiment](docs/sync-prototype.md) | original synthetic feasibility harness and diagnostic measurements |
 | [Running as a service](docs/service.md) | systemd (Linux) and launchd (macOS) installation |
 | [Docker](docs/docker.md) | image details, compose, multi-arch builds, aarch64/Jetson |
 | [Cheat sheet](CHEATSHEET.md) | one-page command map |
