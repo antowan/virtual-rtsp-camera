@@ -23,8 +23,8 @@ class Proxy:
         self.stop = threading.Event()
         self.expected_disconnect = threading.Event()
         self.records: list[dict] = []
-        self.errors: list[str] = []
-        self.expected_errors: list[str] = []
+        self.errors: list[dict] = []
+        self.expected_errors: list[dict] = []
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen()
@@ -53,7 +53,7 @@ class Proxy:
                         if isinstance(exc, OSError) and self.expected_disconnect.is_set()
                         else self.errors
                     )
-                    destination.append(str(exc))
+                    destination.append({"at_ns": time.monotonic_ns(), "detail": str(exc)})
 
     def bridge(self, client: socket.socket, server: socket.socket) -> None:
         parser = RtspStreamParser()

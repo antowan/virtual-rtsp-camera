@@ -34,12 +34,6 @@ class SceneClock:
         return (loop + 1) * self.frames + points[0]
 
 
-def nearest_global_frame(marker: int, expected: int, frames: int) -> int:
-    """Lift a cyclic marker near the common clock, not a reader-local PTS origin."""
-    loop = (expected - marker + frames // 2) // frames
-    return max(0, loop * frames + marker)
-
-
 def alignment_report(
     samples: list[dict], frame_ms: float, expected_views: tuple[int, ...] = (0, 1, 2)
 ) -> dict:

@@ -13,6 +13,7 @@ from itertools import pairwise
 from pathlib import Path
 
 from .clock import SceneClock
+from .identity import decoded_identity, identified_packet
 
 RATE = 30
 FRAMES = 120
@@ -116,6 +117,9 @@ def packet_index(source) -> tuple[list[dict], tuple[int, ...]]:
     stream = source.streams.video[0]
     if stream.codec_context.name != "h264" or stream.average_rate != Fraction(RATE):
         raise ValueError("prototype requires its generated native-rate H.264 fixtures")
+    extra = stream.codec_context.extradata
+    if not extra or len(extra) < 5 or extra[0] != 1 or extra[4] & 3 != 3:
+        raise ValueError("prototype requires four-byte AVCC NAL lengths")
     packets = []
     total_bytes = 0
     for packet in source.demux(stream):
@@ -209,6 +213,7 @@ def worker(
                                 "kind": "skipped",
                                 "view": view,
                                 "generation": generation,
+                                "at_ns": now,
                                 "from": pts,
                                 "target": target,
                             }
@@ -216,7 +221,7 @@ def worker(
                         continue
                     if stop.wait(max(0, (deadline - now) / 1_000_000_000)):
                         return
-                    packet = av.Packet(original["data"])
+                    packet = av.Packet(identified_packet(original["data"], view, generation, pts))
                     packet.pts = pts - session_origin
                     packet.dts = dts - session_origin
                     packet.duration = 1
@@ -263,12 +268,22 @@ def worker(
             }
         )
         raise
+    finally:
+        events.finish()
 
 
 def observer(url: str, view: int, name: str, session: int, start, stop, events) -> None:
     av, _ = dependencies()
     if not start.wait(20):
-        events.put({"kind": "observer_error", "name": name, "detail": "epoch timeout"})
+        events.put(
+            {
+                "kind": "observer_error",
+                "name": name,
+                "observer_session": session,
+                "detail": "epoch timeout",
+            }
+        )
+        events.finish()
         return
     try:
         with av.open(
@@ -301,6 +316,9 @@ def observer(url: str, view: int, name: str, session: int, start, stop, events) 
                         }
                     )
                     continue
+                identity_view, generation, global_frame = decoded_identity(frame)
+                if identity_view != view or global_frame % FRAMES != marker:
+                    raise ValueError("diagnostic identity differs from decoded scene marker")
                 pts = float(frame.pts * frame.time_base)
                 if previous_pts is not None and pts <= previous_pts:
                     raise ValueError("decoded presentation timestamps moved backward")
@@ -314,12 +332,23 @@ def observer(url: str, view: int, name: str, session: int, start, stop, events) 
                         "pts_seconds": pts,
                         "arrival_ns": arrival,
                         "observer_session": session,
+                        "publisher_generation": generation,
+                        "global_frame": global_frame,
                     }
                 )
     except Exception:
         if not stop.is_set():
-            events.put({"kind": "observer_error", "name": name, "detail": traceback.format_exc()})
+            events.put(
+                {
+                    "kind": "observer_error",
+                    "name": name,
+                    "observer_session": session,
+                    "detail": traceback.format_exc(),
+                }
+            )
             raise
+    finally:
+        events.finish()
 
 
 def stop_process(process: multiprocessing.Process, event, timeout: float = 2.0) -> None:
