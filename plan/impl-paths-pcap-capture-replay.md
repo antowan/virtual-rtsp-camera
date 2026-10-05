@@ -204,7 +204,7 @@ MediaMTX (source: rtsp://camera) ← tcpdump records everything on eth0
 
 ---
 
-## Docker / Linux capability constraints (verified on DEX5W000001, Jetson Orin, kernel 5.15-tegra)
+## Docker / Linux capability constraints
 
 These findings apply directly to the `vcam` Docker image and `docker-compose.yml`.
 
@@ -219,7 +219,7 @@ These findings apply directly to the `vcam` Docker image and `docker-compose.yml
 
 The `vcam` Dockerfile runs as `USER vcam` (uid 1000). When a process drops to a non-root UID, Linux clears all effective capabilities unless they are inherited via **ambient caps** or baked into the **file capabilities** of the binary.
 
-Tested on the station:
+Observed in a Linux container test environment:
 
 | Scenario | Works? |
 |---|---|
@@ -257,12 +257,12 @@ This does **not matter for our use-case**: we are capturing traffic to/from the 
 |---|---|---|
 | `bridge` (default) | `eth0` inside container | ✅ Works. Sees only the container's own traffic. |
 | `host` | Any host NIC | ✅ Works. Sees all host traffic. Good for capturing camera traffic when camera is on the LAN. |
-| `edgeai-net` (custom bridge) | `eth0` inside container | ✅ Verified on DEX5W000001. |
+| Custom bridge | `eth0` inside container | ✅ Observed in a Linux container test environment. |
 | Container-to-container (same bridge) | `eth0` | ✅ Captures traffic from MediaMTX and ffmpeg processes in the same network namespace. |
 
 ### Seccomp profile
 
-The station uses Docker's built-in `seccomp` profile (`name=seccomp,profile=builtin`). All syscalls required by `tcpdump` and raw socket operations (`socket(AF_PACKET)`, `recvfrom`, `bind`) are allowed by the default profile — no custom seccomp override needed.
+The test environment used Docker's built-in `seccomp` profile (`name=seccomp,profile=builtin`). All syscalls required by `tcpdump` and raw socket operations (`socket(AF_PACKET)`, `recvfrom`, `bind`) are allowed by the default profile — no custom seccomp override needed.
 
 ### Summary table
 

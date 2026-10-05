@@ -48,9 +48,9 @@ docker run --rm -p 8554:8554 \
 ```
 
 `<new-tag>` is a future image built from this implementation, not an assertion
-that an existing published tag contains it. Mac-local application integration
-is the acceptance path for this change. ICO500 deployment validation follows
-only after that image is built, tagged and explicitly redeployed.
+that an existing published tag contains it. Controlled local application
+integration validates this change. Deployment environments require separate
+qualification using an image built from the implementation.
 
 ## Supported source profile
 
@@ -141,7 +141,7 @@ not just the healthy pair. The controlled same-frame decoded receipt spread thre
 33.333 ms at 30 fps; it is not widened to accommodate failures. Receipt timestamps
 are taken as frames emerge from the decoder, before diagnostic marker extraction.
 
-### Mac-local acceptance observations
+### Controlled local validation observations
 
 The three application profiles passed serially at 44 seconds each with at least
 ten scene wraps. An independent FFmpeg camera ran alongside the group; healthy
@@ -169,10 +169,10 @@ The Linux/arm64 Docker runtime was also built and exercised locally through its
 normal entrypoint with read-only fixtures and no external network. Two grouped
 publishers and an independent camera each decoded 180 consecutive native-PTS
 frames, followed by clean SIGTERM shutdown. This verifies packaging and runtime
-startup, not synchronization accuracy on ICO500.
+startup, not synchronization accuracy in arbitrary deployment environments.
 
 These controlled local measurements are not a universal maximum-skew SLA,
 transport-to-frame timestamp certification, or a guarantee for arbitrary
 resolutions, receivers, networks and machine loads. Long-running RTP wrap,
-representative deployment loads, shared server/host failures and ICO500 image
-deployment remain separate qualification work.
+representative deployment loads, shared server/host failures and deployment
+environment validation remain separate qualification work.

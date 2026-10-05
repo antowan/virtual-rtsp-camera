@@ -1,6 +1,6 @@
 # Clock synchronisation (RTCP NTP timestamps)
 
-Every RTCP Sender Report carries a wall-clock NTP timestamp, which is what the downstream pipeline (e.g. EAIS DeepStream) uses for clock-sync diagnostics.  That timestamp comes directly from the host system clock — there is no independent clock inside vcam.
+Every RTCP Sender Report carries a wall-clock NTP timestamp, which downstream clients use for clock-sync diagnostics. That timestamp comes directly from the host system clock — there is no independent clock inside vcam.
 
 ## RTCP clock chain
 
@@ -19,14 +19,14 @@ services:
     image: vcam:latest
     cap_add:
       - SYS_TIME     # grants adjtimex / clock_settime inside the container
-    command: run --ntp-server 192.168.198.151   # EAIS station IP
+    command: run --ntp-server 192.0.2.123   # example NTP server; replace with your server
 ```
 
 Or via the config file:
 
 ```yaml
 server:
-  ntp_server: 192.168.198.151   # sync before start; container + SYS_TIME required
+  ntp_server: 192.0.2.123   # example; container + SYS_TIME required
 ```
 
 Before the RTSP server starts, vcam queries the NTP server (pure Python, no extra dependencies), measures the offset, and applies it:
@@ -37,11 +37,11 @@ Before the RTSP server starts, vcam queries the NTP server (pure Python, no extr
 
 ```bash
 # Read-only — works anywhere, no privileges needed
-vcam clock-status --ntp-server 192.168.198.151
+vcam clock-status --ntp-server 192.0.2.123
 # System time  : 2026-08-25T10:08:34 UTC
 # In container : yes
 # CAP_SYS_TIME : yes
-# NTP server   : 192.168.198.151
+# NTP server   : 192.0.2.123
 # Offset       : +1.853 ms
 # RTT          : 0.812 ms
 ```

@@ -71,9 +71,9 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Diagnostic telemetry is drained before watchdog evaluation and final evidence
   collection.
 
-Mac-local application acceptance and Docker runtime smoke passed. ICO500
-deployment qualification follows after redeploying this newly tagged image;
-it has not been performed as part of this release.
+Controlled local application tests and Docker runtime smoke passed.
+Representative workloads, networks and deployment environments require
+separate qualification; these results are not a universal synchronization SLA.
 
 ---
 

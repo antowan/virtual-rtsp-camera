@@ -44,7 +44,7 @@ Two dependencies were also dropped: `libpcap-dev` existed only to support a C bi
 - **REQ-009**: When looping, per-SSRC sequence numbers and RTP timestamps must be rewritten so the stream stays monotonic across the loop boundary; the RTP payload itself must remain untouched.
 - **REQ-010**: Replay must serve readers over both `RTP/AVP` (UDP) and `RTP/AVP/TCP` (interleaved), because DeepStream deployments use either.
 - **SEC-001**: PCAP files may contain credentials embedded in RTSP `DESCRIBE` / `ANNOUNCE` headers; the tool must log a warning when writing **or replaying** such a capture and must document redaction procedures.
-- **CON-001**: Must run on `linux/amd64` and `linux/arm64` (Jetson Orin target). macOS support for development is required but performance is best-effort.
+- **CON-001**: Must run on `linux/amd64` and `linux/arm64`. macOS support for development is required but performance is best-effort.
 - **CON-002**: No new mandatory system-level dependencies may be added to the Docker image beyond what ships in the base image (`python:3.12-slim`). PCAP file I/O must therefore be pure Python.
 - **CON-003**: PCAP replay must not require a running `ffmpeg` process **and must not route through MediaMTX** — both re-packetise and would destroy the fidelity REQ-003 exists to guarantee. Replay owns its own RTSP listener.
 - **CON-004**: `scapy` must not be imported on the CLI hot path; it costs ~12 MB and a noticeable import delay, so it is loaded lazily inside the PCAP module only when a capture is actually touched.
@@ -107,7 +107,7 @@ Two dependencies were also dropped: `libpcap-dev` existed only to support a C bi
 | TASK-018 | **`vcam doctor` checks** — verify the PCAP backend imports and report the resolved scapy version. The revision-1.0 `libpcap` probe is dropped: nothing links against it. | ✅ | 2026-08-26 |
 | TASK-019 | **Update docs** — add a `replays:` example to the sample config, and document the replay mode, the `tcpdump` capture recipe, and PCAP credential redaction in the README and cheatsheet. | ✅ | 2026-08-26 |
 | TASK-020 | ~~**Dockerfile `libpcap-dev`**~~ — dropped. No C binding is used, and adding `-dev` packages to the runtime image would reverse the CVE reduction done in `5afd55d`. `tcpdump` + `setcap cap_net_raw+eip` is added only when the proxy lands. | ➖ | |
-| TASK-021 | **End-to-end test on DEX5W000001** — capture a real camera with `tcpdump`, verify with `capinfos`, then `vcam replay` it into a DeepStream pipeline and confirm frame delivery with no pipeline errors over a 5-minute window. | ⬜ | |
+| TASK-021 | **End-to-end deployment test** — capture a real camera with `tcpdump`, verify with `capinfos`, then `vcam replay` it into a DeepStream pipeline and confirm frame delivery with no pipeline errors over a 5-minute window. | ⬜ | |
 
 ---
 
@@ -162,7 +162,7 @@ Two dependencies were also dropped: `libpcap-dev` existed only to support a C bi
 - **TEST-010**: End-to-end — an in-process RTSP client performs `OPTIONS`/`DESCRIBE`/`SETUP`/`PLAY` against the replay server over TCP interleaved and receives the captured RTP packets byte-for-byte, in order. Repeated for UDP transport. (FILE-013)
 - **TEST-011**: Basic auth rejects an anonymous `DESCRIBE` with `401` + `WWW-Authenticate`, and accepts valid credentials. (FILE-013)
 - **TEST-012**: Config loader parses a `replays:` entry, resolves its source relative to the config file, and rejects a replay path colliding with a camera path. (FILE-013)
-- **TEST-013**: End-to-end integration on DEX5W000001 — replay delivers frames to DeepStream without pipeline errors for 5 minutes. (TASK-021, manual)
+- **TEST-013**: End-to-end deployment integration — replay delivers frames to DeepStream without pipeline errors for 5 minutes. (TASK-021, manual)
 
 ---
 

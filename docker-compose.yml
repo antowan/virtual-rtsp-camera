@@ -3,7 +3,7 @@ services:
     build: .
     image: vcam:latest
     # NTP clock sync: add cap_add below and --ntp-server to the command when you
-    # want the container clock slaved to the EAIS station NTP server.
+    # want the container clock synchronized to your NTP server.
     # cap_add:
     #   - SYS_TIME     # grants adjtimex / clock_settime inside the container
     ports:
@@ -17,7 +17,7 @@ services:
       - ./cameras.yaml:/vcam/cameras.yaml:ro
       - ./videos:/vcam/videos:ro
     restart: unless-stopped
-    # command: run --ntp-server 192.168.198.151
+    # command: run --ntp-server 192.0.2.123
 
   # Optional TCP chaos testing proxy (Toxiproxy).
   # Run with: docker compose --profile chaos up -d

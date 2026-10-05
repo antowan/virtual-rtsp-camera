@@ -405,7 +405,7 @@ def run(
             "--ntp-server",
             help=(
                 "Sync the container clock to this NTP server before starting "
-                "(e.g. 192.168.198.151). Docker only: rejected on bare CLI / "
+                "(e.g. 192.0.2.123). Docker only: rejected on bare CLI / "
                 "service deployments, and measured but not applied without "
                 "cap_add: [SYS_TIME]."
             ),
@@ -1016,7 +1016,7 @@ def clock_status(
             "--ntp-server",
             help=(
                 "NTP server to measure the clock offset against "
-                "(e.g. 192.168.198.151). Read-only: never adjusts the clock."
+                "(e.g. 192.0.2.123). Read-only: never adjusts the clock."
             ),
         ),
     ] = None,
