@@ -13,7 +13,7 @@ import socket
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import partial
 from pathlib import Path
 
@@ -23,7 +23,7 @@ from vcam.binaries import resolve_binary
 from vcam.mediamtx import ServerInstance, render_server_config
 from vcam.models import CameraSpec, ServerSpec
 
-from .events import EventReceiver
+from .events import MAX_EVENT_BATCH, EventReceiver
 from .lifecycle import cleanup_all, run_bounded
 from .media import FRAMES, RATE, dependencies, generate_fixture, observer, stop_process, worker
 from .proxy import Proxy
@@ -55,6 +55,21 @@ def listener_reported(log: str, port: int) -> bool:
         f"[RTSP] {message} 127.0.0.1:{port} (" in log
         for message in ("listener opened on", "started with listeners on")
     )
+
+
+def drain_events(events: EventReceiver, timeout: float) -> Iterator[dict]:
+    try:
+        batch = events.get_many(timeout)
+    except queue.Empty:
+        return
+    while True:
+        yield from batch
+        if len(batch) < MAX_EVENT_BATCH:
+            return
+        try:
+            batch = events.get_many(0)
+        except queue.Empty:
+            return
 
 
 def run_experiment(
@@ -321,11 +336,7 @@ def run_experiment(
                 publish[1].paused.clear()
                 report["events"].append({"kind": "fault_end", "at_ns": now_ns})
                 fault_finished = True
-            try:
-                event = events.get(timeout=0.02)
-            except queue.Empty:
-                event = None
-            if event:
+            for event in drain_events(events, timeout=0.02):
                 consume(event)
             for view, (process, _) in list(workers.items()):
                 ready_age = now_ns - joined_at[view]
@@ -413,11 +424,12 @@ def run_experiment(
         try:
             deadline = time.monotonic() + 1
             while time.monotonic() < deadline:
-                try:
-                    trailing = events.get(0.05)
-                except queue.Empty:
+                drained = False
+                for trailing in drain_events(events, timeout=0.05):
+                    consume(trailing)
+                    drained = True
+                if not drained:
                     break
-                consume(trailing)
             report["telemetry"] = events.evidence()
             if events.gaps or report["telemetry"]["incomplete"]:
                 report["errors"].append({"kind": "telemetry_incomplete"})

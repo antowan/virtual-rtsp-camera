@@ -109,6 +109,29 @@ def test_telemetry_is_atomic_bounded_and_detects_sequence_gaps() -> None:
             sink._socket.close()
 
 
+def test_telemetry_collector_drains_bursts_before_watchdog_polling() -> None:
+    receiver = EventReceiver()
+    sink = receiver.sink()
+    try:
+        for index in range(600):
+            sink.put({"kind": "sent", "index": index})
+        sink.finish()
+
+        from scripts.sync_prototype.__main__ import drain_events
+
+        events = list(drain_events(receiver, timeout=0.1))
+
+        assert len(events) == 601
+        assert [event["index"] for event in events[:-1]] == list(range(600))
+        assert events[-1]["kind"] == "telemetry_end"
+        assert not receiver.gaps
+        assert not receiver.evidence()["incomplete"]
+    finally:
+        receiver.close()
+        if sink._socket is not None:
+            sink._socket.close()
+
+
 def _suspended_sender(sink: EventSink, stop) -> None:
     sink.put({"kind": "ready"})
     os.kill(os.getpid(), signal.SIGSTOP)

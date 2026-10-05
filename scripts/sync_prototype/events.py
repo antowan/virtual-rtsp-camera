@@ -10,6 +10,7 @@ import socket
 from dataclasses import dataclass, field
 
 MAX_EVENT_BYTES = 8000
+MAX_EVENT_BATCH = 256
 
 
 @dataclass
@@ -64,7 +65,7 @@ class EventReceiver:
         self.socket.settimeout(timeout)
         try:
             data, _ = self.socket.recvfrom(MAX_EVENT_BYTES + 1)
-        except TimeoutError as exc:
+        except (BlockingIOError, TimeoutError) as exc:
             raise queue.Empty from exc
         if len(data) > MAX_EVENT_BYTES:
             raise ValueError("oversized telemetry datagram")
@@ -83,6 +84,17 @@ class EventReceiver:
         if message["event"]["kind"] == "telemetry_end":
             self.producers[producer]["complete"] = True
         return message["event"]
+
+    def get_many(self, timeout: float, limit: int = MAX_EVENT_BATCH) -> list[dict]:
+        if limit < 1:
+            raise ValueError("event batch limit must be positive")
+        events = [self.get(timeout)]
+        while len(events) < limit:
+            try:
+                events.append(self.get(0))
+            except queue.Empty:
+                break
+        return events
 
     def allow_incomplete(self, producer: str, reason: str) -> None:
         self.producers[producer]["expected_incomplete"] = reason
