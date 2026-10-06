@@ -109,6 +109,12 @@ Capture replay needs `scapy`, an optional extra:
 uv sync --extra replay          # or: pip install 'vcam[replay]'
 ```
 
+Synchronized playback needs `PyAV`, also an optional extra (Docker images include it):
+
+```bash
+uv sync --extra sync            # or: pip install 'vcam[sync]'
+```
+
 ## How it works
 
 Under the hood the tool runs a [MediaMTX](https://github.com/bluenviron/mediamtx) server
@@ -166,7 +172,7 @@ file, `start_offset`, legacy manifests, and the MediaMTX binary resolution order
 | [Capture replay](docs/capture-replay.md) | replay `tcpdump` captures byte for byte, looping, redaction |
 | [Network chaos](docs/network-chaos.md) | Toxiproxy sidecar: latency, bandwidth, stalls, disconnects |
 | [Configuration](docs/configuration.md) | full `cameras.yaml` reference, auth, health file, server binary |
-| [Clock sync](docs/clock-sync.md) | RTCP NTP timestamps, container time sync, skew testing |
+| [Clock sync](docs/clock-sync.md) | RTCP NTP timestamps, visible system-clock adjustment and skew testing |
 | [Synchronized playback](docs/synchronized-playback.md) | opt-in `vcam run` shared scene groups, compatible assets, isolated recovery and Docker usage |
 | [Shared-clock experiment](docs/sync-prototype.md) | original synthetic feasibility harness and diagnostic measurements |
 | [Running as a service](docs/service.md) | systemd (Linux) and launchd (macOS) installation |
