@@ -404,10 +404,10 @@ def run(
         typer.Option(
             "--ntp-server",
             help=(
-                "Sync the container clock to this NTP server before starting "
-                "(e.g. 192.0.2.123). Docker only: rejected on bare CLI / "
-                "service deployments, and measured but not applied without "
-                "cap_add: [SYS_TIME]."
+                "Adjust the visible system clock from this NTP server before starting "
+                "(e.g. 192.0.2.123). Docker only: rejected on bare CLI / service "
+                "deployments, and measured but not applied without cap_add: [SYS_TIME]. "
+                "On native Linux this may change the host clock."
             ),
         ),
     ] = None,
@@ -539,7 +539,7 @@ def _build_stack(
 
 
 def _run_ntp_sync(ntp_server: str | None) -> None:
-    """Query *ntp_server* and apply the measured offset. Container-only."""
+    """Apply the measured offset; callers must use an isolated or intended clock."""
     if ntp_server is None:
         return
 
@@ -549,8 +549,8 @@ def _run_ntp_sync(ntp_server: str | None) -> None:
         raise _fail(
             f"--ntp-server ({ntp_server}) is only supported when running inside a Docker "
             "container.\nApplying it on a bare CLI or systemd service would skew the host "
-            "system clock.\nRemove --ntp-server, or run vcam inside Docker with "
-            "cap_add: [SYS_TIME]."
+            "system clock.\nRemove --ntp-server, or run vcam inside an isolated Docker VM "
+            "with cap_add: [SYS_TIME]. Native Linux containers share the host kernel clock."
         )
 
     console.print(f"[dim]NTP: querying {ntp_server} …[/]")
@@ -1058,7 +1058,8 @@ def clock_status(
     elif not has_cap:
         console.print(
             "\n[yellow]Note:[/] CAP_SYS_TIME is not set — offset is measured but cannot "
-            "be applied.\nAdd [bold]cap_add: [SYS_TIME][/] to docker-compose.yml."
+            "be applied.\nAdd [bold]cap_add: [SYS_TIME][/] only in an isolated VM; "
+            "native Linux containers share the host kernel clock."
         )
 
 

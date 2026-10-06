@@ -2,11 +2,12 @@
 
 This module is intentionally limited to the Python standard library.
 
-Clock adjustment is only safe inside an OCI container (Docker Desktop, etc.)
-where ``SYS_TIME`` gives the process exclusive access to the Linux VM clock,
-leaving the macOS or Windows host clock completely untouched.  Calling
-:func:`apply_offset` on a bare system or inside a systemd service would skew
-the whole machine — use :func:`running_in_container` to guard against that.
+Clock adjustment is only safe when the process runs in an isolated VM, such as
+the Linux VM used by Docker Desktop, or when changing the host clock is
+explicitly intended. Native Linux containers share the host kernel clock;
+``CAP_SYS_TIME`` does not provide a per-container clock. Calling
+:func:`apply_offset` on a bare system or inside a native Linux container may
+affect the whole machine.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def has_sys_time_cap() -> bool:
     """Return True if the process holds ``CAP_SYS_TIME`` (bit 25 of CapEff).
 
     This capability is required to call ``adjtimex(2)`` and ``clock_settime(2)``.
-    Add ``cap_add: [SYS_TIME]`` to ``docker-compose.yml`` to enable it.
+    Adding ``cap_add: [SYS_TIME]`` may allow changing the host clock on native Linux.
     """
     try:
         for line in Path("/proc/self/status").read_text(encoding="utf-8").splitlines():
@@ -121,12 +122,13 @@ def measure_offset(
 
 
 def apply_offset(offset_seconds: float) -> None:
-    """Adjust the system clock by *offset_seconds*. Requires ``CAP_SYS_TIME``.
+    """Adjust the visible system clock by *offset_seconds*. Requires ``CAP_SYS_TIME``.
 
     Uses ``clock_settime(2)`` (instant step) for ``|offset| > 128 ms``, and
     ``adjtimex(2)`` (gradual slew) for smaller corrections.  The slew avoids
     a discontinuity in the NTP timestamps embedded in RTCP Sender Reports
-    while the stream is live.
+    while the stream is live. On native Linux, this can change the host clock;
+    use only in an isolated VM or when that effect is intended.
 
     Raises :class:`OSError` if the syscall fails (e.g. missing capability).
     """

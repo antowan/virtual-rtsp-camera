@@ -146,9 +146,12 @@ Missing/duplicate frames, insufficient overlap, stale content, backward
 presentation timestamps or a whole-scene lag fail the check.
 
 Loopback reader proxies independently retain RTP access-unit timestamps/SSRCs and
-RTCP Sender Reports. These are diagnostic records, not an assertion that SR
-wall-clock correctness establishes scene alignment. Raw RTP timestamps must not
-be compared directly between SSRCs.
+RTCP Sender Reports. The application-path regression maps SR timestamps back to
+decoded fixture frames and checks the resulting scene-start relationship across
+group members and recovery. This is a controlled generated-fixture assertion,
+not an assertion that SR wall-clock correctness establishes scene alignment for
+arbitrary assets or receivers. Raw RTP timestamps must not be compared directly
+between SSRCs.
 
 The fault cases affect only view 1:
 
@@ -207,8 +210,8 @@ certification or maximum-skew SLA**:
 - Pixel markers alone are cyclic. Added in-band global identities remove the
   initial whole-period ambiguity in this instrumented copy profile; they do not
   independently certify a real asset's multi-view scene provenance.
-- SRs are recorded but not automatically mapped to every decoded frame. No RTCP
-  clock-accuracy guarantee or realtime clock adjustment is implemented.
+- SR mapping is checked in the opt-in application-path fixture tests; no general
+  RTCP clock-accuracy guarantee or realtime clock adjustment is implemented.
 - Healthy measurements do not include intentional outage windows. Copy recovery
   includes a future-access-point wait, output setup and reader reconnect latency.
 - This is small synthetic video on the local host, not a resolution/load,

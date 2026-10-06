@@ -27,9 +27,23 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-06
+
 ### Added
 
--
+- Synchronized playback application tests now map RTCP Sender Reports and RTP
+  timestamps back to decoded fixture frames across baseline and publisher
+  recovery, and verify cross-camera scene-start alignment within one frame.
+
+### Changed
+
+- Clarify that native Linux containers share the host kernel clock and that
+  granting `CAP_SYS_TIME` can affect the host; clock adjustment is safe only
+  in an isolated VM or when changing the host clock is explicitly intended.
+- Document the related RTCP-SR timestamp correction in
+  [edge-ai/aibox-webserver-backend-ms3#905](https://github.com/edge-ai/aibox-webserver-backend-ms3/pull/905).
+
+---
 
 ---
 
@@ -277,6 +291,7 @@ separate qualification; these results are not a universal synchronization SLA.
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
 [Unreleased]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.1...HEAD
+[0.5.0]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/antoine-em/virtual-rtsp-camera/compare/v0.3.0...v0.3.1

@@ -140,6 +140,13 @@ peer isolation, health and shutdown. Recovery checks include the rejoined member
 not just the healthy pair. The controlled same-frame decoded receipt spread threshold is
 33.333 ms at 30 fps; it is not widened to accommodate failures. Receipt timestamps
 are taken as frames emerge from the decoder, before diagnostic marker extraction.
+The baseline and publisher-recovery profiles also capture RTP marker timestamps
+and RTCP Sender Reports at a loopback TCP proxy, associate sender-report clock
+mappings with decoded scene frames, and require the derived scene-start times
+to agree across grouped publishers and reader reconnects within one frame.
+This is a generated-fixture regression check, not a guarantee of original
+acquisition time or RTCP accuracy for arbitrary assets, receivers or deployment
+environments.
 
 ### Controlled local validation observations
 

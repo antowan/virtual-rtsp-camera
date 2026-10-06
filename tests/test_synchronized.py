@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from scripts.sync_prototype.proxy import Proxy
 
 from vcam.config import load_stack, save_stack
 from vcam.errors import SupervisorError
@@ -32,6 +33,44 @@ def sync_stack(path: Path) -> CameraStack:
             CameraSpec(name="b", source=path, sync_group="scene"),
         ]
     )
+
+
+def _rtcp_scene_start_offsets(
+    samples: list[tuple[int, float, int]],
+    wire: list[dict],
+    lead_frames: int,
+    frame_offset: int = 0,
+    minimum_reports: int = 2,
+) -> list[float]:
+    first_marker, first_pts, _ = samples[0]
+    packets = [record for record in wire if record["kind"] == "rtp"]
+    sender_reports = [record for record in wire if record["kind"] == "sr"]
+    mapped_packets = []
+    for packet in packets:
+        frame_sample = min(samples, key=lambda sample: abs(sample[2] - packet["arrival_ns"]))
+        if abs(frame_sample[2] - packet["arrival_ns"]) <= 20_000_000:
+            frame = frame_offset + first_marker + round((frame_sample[1] - first_pts) * 30)
+            mapped_packets.append((packet, frame))
+    assert mapped_packets, "no RTP packets matched decoded frames"
+    timestamp_modulo = 1 << 32
+    offsets = []
+    for sender_report in sender_reports:
+        packet, frame = min(
+            mapped_packets,
+            key=lambda item: abs(
+                (item[0]["timestamp"] - sender_report["timestamp"] + timestamp_modulo // 2)
+                % timestamp_modulo
+                - timestamp_modulo // 2
+            ),
+        )
+        delta = (
+            sender_report["timestamp"] - packet["timestamp"] + timestamp_modulo // 2
+        ) % timestamp_modulo - timestamp_modulo // 2
+        if frame >= 60:
+            frame_position = frame + delta / 3000
+            offsets.append(sender_report["ntp_unix"] - (frame_position + lead_frames) / 30)
+    assert len(offsets) >= minimum_reports, "insufficient RTCP SR/RTP-to-frame evidence"
+    return offsets
 
 
 @pytest.mark.parametrize(
@@ -330,6 +369,7 @@ def test_vcam_run_synchronized_application_path(tmp_path: Path, scenario: str) -
     observations: dict[str, list[tuple[int, float, int]]] = {}
     marker_latencies: dict[str, list[int]] = {}
     errors: list[str] = []
+    reader_proxies: dict[str, Proxy] = {}
     stopping = threading.Event()
     reader_stops: dict[str, threading.Event] = {}
     readers: list[threading.Thread] = []
@@ -339,7 +379,7 @@ def test_vcam_run_synchronized_application_path(tmp_path: Path, scenario: str) -
         marker_latencies[name] = []
         try:
             with av.open(
-                f"rtsp://127.0.0.1:{port}/{path}",
+                f"rtsp://127.0.0.1:{reader_proxies[name].port}/{path}",
                 options={"rtsp_transport": "tcp", "probesize": "32", "analyzeduration": "0"},
                 timeout=(3.0, 2.0),
             ) as source:
@@ -361,6 +401,7 @@ def test_vcam_run_synchronized_application_path(tmp_path: Path, scenario: str) -
 
     def launch(name: str, view: int, path: str) -> None:
         reader_stops[name] = threading.Event()
+        reader_proxies[name] = Proxy(port, inspect=True)
         thread = threading.Thread(target=read, args=(name, view, path), daemon=True)
         readers.append(thread)
         thread.start()
@@ -430,11 +471,14 @@ def test_vcam_run_synchronized_application_path(tmp_path: Path, scenario: str) -
                 process.wait(5)
             for thread in readers:
                 thread.join(4)
+            for proxy in reader_proxies.values():
+                proxy.close()
         (tmp_path / "observations.json").write_text(
             json.dumps(
                 {
                     "observations": observations,
                     "marker_latencies_ns": marker_latencies,
+                    "wire": {name: proxy.records for name, proxy in reader_proxies.items()},
                     "epoch_ns": epoch,
                     "health": snapshot,
                     "errors": errors,
@@ -466,6 +510,43 @@ def test_vcam_run_synchronized_application_path(tmp_path: Path, scenario: str) -
             frames[frame] = arrival
         assert all(after == before + 1 for before, after in pairwise(frames))
         keyed[name] = frames
+    rtcp_medians = {}
+    if scenario == "baseline" or "recovered" in observations:
+        rtcp_scene_starts = {}
+        diagnostic_readers = (
+            [*keyed, "late", "reconnect"]
+            if scenario == "baseline"
+            else ["main0", "main2", "recovered", "reconnect"]
+        )
+        for name in diagnostic_readers:
+            samples = observations[name]
+            frame_offset = 0
+            if name not in keyed:
+                first_marker, _, first_arrival = samples[0]
+                initial_frame = min(
+                    (frame for frame in keyed["main0"] if frame % 120 == first_marker),
+                    key=lambda frame: abs(keyed["main0"][frame] - first_arrival),
+                )
+                frame_offset = initial_frame - first_marker
+            try:
+                rtcp_scene_starts[name] = _rtcp_scene_start_offsets(
+                    samples,
+                    reader_proxies[name].records,
+                    snapshot["sync_groups"][0]["lead_frames"],
+                    frame_offset,
+                    minimum_reports=1 if name not in keyed else 2,
+                )
+            except AssertionError as exc:
+                raise AssertionError(f"{name}: {exc}; see observations.json") from exc
+        rtcp_medians = {
+            name: sorted(offsets)[len(offsets) // 2] for name, offsets in rtcp_scene_starts.items()
+        }
+        scene_start_spread = max(rtcp_medians.values()) - min(rtcp_medians.values())
+        assert scene_start_spread <= 1 / 30, (
+            f"RTCP SR-derived scene starts diverged: {rtcp_medians}; see observations.json"
+        )
+    else:
+        scene_start_spread = None
     common = set.intersection(*(set(frames) for frames in keyed.values()))
     spreads = [
         (
@@ -511,9 +592,15 @@ def test_vcam_run_synchronized_application_path(tmp_path: Path, scenario: str) -
             assert camera["restarts"] == 0
         if camera["name"] != "independent":
             assert camera["gop_skips"] == 0
+    rtcp_summary = (
+        f"rtcp_scene_start_spread_ms={scene_start_spread * 1000:.6f}"
+        if scene_start_spread is not None
+        else "RTCP wire records captured for lifecycle diagnostics"
+    )
     print(
         f"MEASURED application {scenario}: healthy_matches={len(common)} "
         f"healthy_max_spread_ms={max(spreads):.6f} 10+ wraps; independent camera active; "
         f"acquisition={acquisition}; marker_work_max_ms="
-        f"{max(max(values) for values in marker_latencies.values()) / 1e6:.6f}"
+        f"{max(max(values) for values in marker_latencies.values()) / 1e6:.6f}; "
+        f"{rtcp_summary}"
     )
