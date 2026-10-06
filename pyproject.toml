@@ -15,11 +15,11 @@ dependencies = [
 [project.optional-dependencies]
 # Capture replay only. Kept out of the base install so the nine commands that
 # never touch a capture file do not pay for ~12 MB of scapy.
-replay = ["scapy>=2.5"]
+replay = ["scapy>=2.8.0"]
 # Standalone synchronization experiments only; not used by `vcam run`.
-prototype = ["av>=16,<17", "numpy>=1.26"]
+prototype = ["av>=17.1.0,<18", "numpy>=1.26"]
 # Opt-in shared-clock H.264 publishers; independent cameras do not import PyAV.
-sync = ["av>=16,<17"]
+sync = ["av>=17.1.0,<18"]
 
 [project.scripts]
 vcam = "vcam.cli:main"
@@ -27,9 +27,9 @@ vcam = "vcam.cli:main"
 [dependency-groups]
 dev = [
     "pytest>=8.0",
-    "scapy>=2.5",
-    "ruff>=0.16.9",
-    "mypy>=1.14",
+    "scapy>=2.8.0",
+    "ruff>=0.16.10",
+    "mypy>=2.4.0",
     "types-pyyaml>=6.0.12.20260906",
 ]
 
