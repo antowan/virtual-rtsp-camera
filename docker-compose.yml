@@ -2,10 +2,10 @@ services:
   vcam:
     build: .
     image: vcam:latest
-    # NTP clock sync: add cap_add below and --ntp-server to the command when you
-    # want the container clock synchronized to your NTP server.
+    # NTP clock adjustment: only enable in an isolated VM, or when changing the
+    # native Linux host clock is explicitly intended.
     # cap_add:
-    #   - SYS_TIME     # grants adjtimex / clock_settime inside the container
+    #   - SYS_TIME     # grants adjtimex / clock_settime on the visible kernel clock
     ports:
       - "8554:8554"
       # - "8555:8555"   # cameras with their own `port:` in cameras.yaml

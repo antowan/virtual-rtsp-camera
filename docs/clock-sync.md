@@ -1,6 +1,6 @@
 # Clock synchronisation (RTCP NTP timestamps)
 
-Every RTCP Sender Report carries a wall-clock NTP timestamp, which downstream clients use for clock-sync diagnostics. That timestamp comes directly from the host system clock — there is no independent clock inside vcam.
+Every RTCP Sender Report carries a wall-clock NTP timestamp, which downstream clients use for clock-sync diagnostics. MediaMTX reads the system clock visible to its process; vcam does not have an independent clock.
 
 ## RTCP clock chain
 
@@ -8,17 +8,19 @@ Every RTCP Sender Report carries a wall-clock NTP timestamp, which downstream cl
 host OS clock  →  MediaMTX time.Now()  →  RTCP SR NTPTime  →  downstream client
 ```
 
-## Syncing the container to an NTP server
+## Adjusting the visible system clock from an NTP server
 
-When running inside Docker, the container has its **own Linux kernel clock** (separate from the macOS host on Docker Desktop) that can be independently adjusted with `CAP_SYS_TIME`.
+Containers do not generally have an independent system clock. Docker Desktop runs containers inside a Linux VM, whose clock is separate from the macOS or Windows host. On native Linux, containers share the host kernel clock; granting `CAP_SYS_TIME` may therefore adjust the host clock as well. Do not add this capability on native Linux unless changing the host's system clock is explicitly intended.
 
 ```yaml
 # docker-compose.yml
 services:
   vcam:
     image: vcam:latest
+    # Only for a Docker Desktop/isolated Linux VM, or when changing the
+    # native Linux host clock is explicitly intended.
     cap_add:
-      - SYS_TIME     # grants adjtimex / clock_settime inside the container
+      - SYS_TIME     # grants adjtimex / clock_settime on the visible kernel clock
     command: run --ntp-server 192.0.2.123   # example NTP server; replace with your server
 ```
 
@@ -26,7 +28,7 @@ Or via the config file:
 
 ```yaml
 server:
-  ntp_server: 192.0.2.123   # example; container + SYS_TIME required
+  ntp_server: 192.0.2.123   # example; isolated VM + SYS_TIME required
 ```
 
 Before the RTSP server starts, vcam queries the NTP server (pure Python, no extra dependencies), measures the offset, and applies it:
@@ -46,15 +48,15 @@ vcam clock-status --ntp-server 192.0.2.123
 # RTT          : 0.812 ms
 ```
 
-## Why NTP sync is container-only
+## Where clock adjustment is safe
 
-On a bare CLI or systemd service the system clock is shared with the rest of the machine.  Adjusting it would affect every other process, so `--ntp-server` is rejected outside a container.  Use the host's existing NTP daemon (chrony / timesyncd) if you need whole-system sync.
+vcam rejects `--ntp-server` outside a container because adjusting a bare process's clock would affect the whole machine. This container check does **not** prove the container has an isolated kernel clock: on native Linux, use the host's NTP daemon (chrony / timesyncd) instead. Only grant `SYS_TIME` when the container runs in an isolated VM or when changing the host clock is explicitly intended.
 
 ## Testing clock skew impact
 
 | Scenario | Setup |
 |---|---|
-| Well-synced camera | `--ntp-server <eais-ip>` + `cap_add: [SYS_TIME]` |
-| Skewed camera | Disable NTP in the container (`timedatectl set-ntp false`) |
-| Fixed offset | `timedatectl set-time` inside the container after disabling NTP |
-| Free-running drift | Leave the container clock unsynced with no NTP daemon |
+| Well-synced camera | Use the host's NTP daemon; in an isolated VM, `--ntp-server <eais-ip>` + `cap_add: [SYS_TIME]` |
+| Skewed camera | Use a disposable isolated VM and disable its NTP service |
+| Fixed offset | Adjust time only in a disposable isolated VM |
+| Free-running drift | Leave a disposable isolated VM unsynced with no NTP daemon |

@@ -311,9 +311,9 @@ class ServerSpec(BaseModel):
     ntp_server: str | None = Field(
         default=None,
         description=(
-            "Sync the container clock to this NTP server before starting. "
-            "Only valid when running inside a Docker container with cap_add: [SYS_TIME]. "
-            "Has no effect and is rejected outside a container."
+            "Adjust the visible system clock from this NTP server before starting. "
+            "Requires a container with cap_add: [SYS_TIME]; safe only in an isolated VM "
+            "unless changing the native Linux host clock is explicitly intended."
         ),
     )
 
