@@ -9,6 +9,8 @@ from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .sources import LIVE_READ_TIMEOUT, is_live_source, parse_source
+
 CAMERA_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 RESOLUTION_RE = re.compile(r"^(\d+)x(\d+)$")
 BITRATE_RE = re.compile(r"^\d+(\.\d+)?[kKmM]?$")
@@ -157,12 +159,13 @@ class SimulationSpec(BaseModel):
 
 
 class CameraSpec(BaseModel):
-    """A single virtual camera fed by a video file."""
+    """A single virtual camera fed by a video file or live RTSP/UDP source."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    source: Path
+    source: Path | str
+    source_timeout: float = Field(default=LIVE_READ_TIMEOUT, gt=0, le=60)
     enabled: bool = True
     loop: bool = True
     realtime: bool = Field(default=True, description="Pace the file at native frame rate (-re)")
@@ -184,8 +187,12 @@ class CameraSpec(BaseModel):
 
     @model_validator(mode="after")
     def _check_sync_settings(self) -> CameraSpec:
+        if self.is_live and self.start_offset:
+            raise ValueError("start_offset is only supported for file sources")
         if self.sync_group is None:
             return self
+        if self.is_live:
+            raise ValueError("sync_group is file-replay only; live sources cannot join it")
         if not CAMERA_NAME_RE.fullmatch(self.sync_group):
             raise ValueError("sync_group must be a valid nonempty group name")
         if (
@@ -214,10 +221,14 @@ class CameraSpec(BaseModel):
             )
         return value
 
-    @field_validator("source")
+    @field_validator("source", mode="before")
     @classmethod
-    def _expand_source(cls, value: Path) -> Path:
-        return Path(value).expanduser()
+    def _expand_source(cls, value: Path | str) -> Path | str:
+        return parse_source(value)
+
+    @property
+    def is_live(self) -> bool:
+        return is_live_source(self.source)
 
     def path_suffix(self) -> str:
         return self.name
@@ -326,12 +337,28 @@ class ServerSpec(BaseModel):
         return value
 
 
+class IngestSpec(BaseModel):
+    """Optional, separately supervised simulator RTSP/TCP ingest."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = "127.0.0.1"
+    rtsp_port: int = Field(default=8654, gt=0, le=65535)
+    password: str = ""
+
+    @field_validator("password")
+    @classmethod
+    def _check_password(cls, value: str) -> str:
+        return AuthSpec._check_credential(value) if value else value
+
+
 class CameraStack(BaseModel):
     """Top-level configuration: one server definition, its cameras and replays."""
 
     model_config = ConfigDict(extra="forbid")
 
     server: ServerSpec = Field(default_factory=ServerSpec)
+    ingest: IngestSpec | None = None
     cameras: list[CameraSpec] = Field(default_factory=list)
     replays: list[ReplaySpec] = Field(default_factory=list)
 
@@ -369,6 +396,8 @@ class CameraStack(BaseModel):
             if replay.port in replay_ports:
                 raise ValueError(f"port {replay.port} is claimed by two replays")
             replay_ports.add(replay.port)
+        if self.ingest is not None and self.ingest.rtsp_port in camera_ports | replay_ports:
+            raise ValueError("ingest RTSP port must not overlap camera or replay ports")
         return self
 
     @property

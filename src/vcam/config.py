@@ -72,7 +72,7 @@ def load_stack(path: Path) -> CameraStack:
 def _resolve_sources(stack: CameraStack, base_dir: Path) -> CameraStack:
     """Resolve relative source paths against the config file's directory."""
     for camera in stack.cameras:
-        if not camera.source.is_absolute():
+        if isinstance(camera.source, Path) and not camera.source.is_absolute():
             camera.source = (base_dir / camera.source).resolve()
     for replay in stack.replays:
         if not replay.source.is_absolute():

@@ -6,6 +6,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -18,7 +19,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
-from .errors import SupervisorError
+from .errors import ProbeError, SupervisorError
 from .ffmpeg import build_publish_command, effective_mode
 from .mediamtx import UDP_BLOCK_SIZE, ServerInstance, plan_instances, write_server_config
 from .models import (
@@ -29,8 +30,9 @@ from .models import (
     SimulationSpec,
     StreamMode,
 )
-from .probe import MediaInfo, try_probe
+from .probe import MediaInfo, probe, try_probe
 from .service import vcam_command
+from .sources import display_source
 from .synchronized import SyncGroup, SyncMember, admit_source
 
 logger = logging.getLogger("vcam")
@@ -106,7 +108,7 @@ class ManagedProcess:
     def start(self) -> bool:
         if self.running:
             return True  # already up (e.g. the monitor restarted it first)
-        logger.debug("%s: %s", self.name, " ".join(self.command))
+        logger.debug("%s: %s", self.name, " ".join(display_source(arg) for arg in self.command))
         try:
             self.process = subprocess.Popen(
                 self.command,
@@ -135,6 +137,9 @@ class ManagedProcess:
             return
         for raw in stream:
             line = raw.decode("utf-8", errors="replace").rstrip()
+            for arg in self.command:
+                if display_source(arg) != arg:
+                    line = line.replace(arg, display_source(arg))
             if line:
                 logger.info("[%s] %s", self.name, line)
         stream.close()
@@ -172,6 +177,133 @@ class ManagedProcess:
             except OSError:
                 pass
         self.process = None
+
+
+class LivePublisher(ManagedProcess):
+    """Probe asynchronously before connecting; outages do not spend the restart budget."""
+
+    def __init__(
+        self,
+        camera: CameraSpec,
+        target_url: str,
+        *,
+        ffmpeg: str,
+        ffprobe: str,
+        log_level: str,
+        max_restarts: int | None,
+    ) -> None:
+        super().__init__(name=camera.name, command=[], kind="publisher")
+        self.camera = camera
+        self.target_url = target_url
+        self.ffmpeg = ffmpeg
+        self.ffprobe = ffprobe
+        self.log_level = log_level
+        self.max_restarts = max_restarts
+        self.info: MediaInfo | None = None
+        self.state = "waiting-for-source"
+        self.source_failures = 0
+        self.launches = 0
+        self.failed_restarts = 0
+        self._planned_restart = False
+        self._source_thread: threading.Thread | None = None
+        self._source_done = threading.Event()
+        self._source_error: str | None = None
+
+    def start(self) -> bool:
+        if self.running or self._source_thread is not None or self.suspended:
+            return True
+        if shutil.which(self.ffprobe) is None:
+            logger.error("%s: %s not found on PATH", self.name, self.ffprobe)
+            self.gave_up = True
+            self.state = "failed"
+            return False
+        self._source_done.clear()
+        self._source_thread = threading.Thread(
+            target=self._probe_source, name=f"vcam-source-{self.name}", daemon=True
+        )
+        self._source_thread.start()
+        return True
+
+    def _probe_source(self) -> None:
+        try:
+            self.info = probe(
+                self.camera.source, ffprobe=self.ffprobe, timeout=self.camera.source_timeout
+            )
+            self._source_error = None if self.info.codec else "source has no video stream"
+        except ProbeError as exc:
+            self.info = None
+            self._source_error = str(exc)
+        finally:
+            self._source_done.set()
+
+    def tick(self, now: float) -> None:
+        if self.running:
+            self.state = "running"
+            return
+        if self.suspended or self.gave_up:
+            return
+        if self.process is not None:
+            code = self.process.poll()
+            logger.warning("%s: exited with code %s", self.name, code)
+            self.note_exit(code)
+            self.state = "failed"
+            return
+        if self._source_thread is not None:
+            if not self._source_done.is_set():
+                return
+            self._source_thread.join()
+            self._source_thread = None
+            if self._source_error is not None:
+                self.state = "waiting-for-source"
+                self.source_failures += 1
+                delay = min(BACKOFF_BASE * 2 ** min(self.source_failures - 1, 5), BACKOFF_MAX)
+                self.retry_at = now + delay
+                logger.warning(
+                    "%s: waiting-for-source (%s); retry in %gs",
+                    self.name,
+                    self._source_error,
+                    delay,
+                )
+                return
+            outage = self.source_failures > 0
+            self.source_failures = 0
+            planned = self._planned_restart
+            self._planned_restart = False
+            if self.launches:
+                if (
+                    not outage
+                    and not planned
+                    and self.max_restarts is not None
+                    and self.failed_restarts >= self.max_restarts
+                ):
+                    self.gave_up = True
+                    self.state = "failed"
+                    logger.error("%s: giving up (--max-restarts)", self.name)
+                    return
+                if not planned:
+                    self.restarts += 1
+                if not outage and not planned:
+                    self.failed_restarts += 1
+            self.command = build_publish_command(
+                self.camera,
+                self.target_url,
+                info=self.info,
+                ffmpeg=self.ffmpeg,
+                log_level=self.log_level,
+            )
+            self.launches += 1
+            self.state = "starting" if super().start() else "failed"
+            return
+        if now >= self.retry_at:
+            self.start()
+
+    def stop(self, timeout: float = 5.0) -> None:
+        if self.suspended:
+            self._planned_restart = True
+        if self._source_thread is not None:
+            self._source_thread.join(timeout=self.camera.source_timeout + 1)
+            self._source_thread = None
+        super().stop(timeout)
 
 
 @dataclass
@@ -353,7 +485,11 @@ class Supervisor:
         if not cameras and not replays:
             raise SupervisorError("no enabled cameras or replays to serve")
 
-        missing = [camera for camera in cameras if not camera.source.is_file()]
+        missing = [
+            camera
+            for camera in cameras
+            if isinstance(camera.source, Path) and not camera.source.is_file()
+        ]
         missing_captures = [replay for replay in replays if not replay.source.is_file()]
         if missing or missing_captures:
             unresolved: list[CameraSpec | ReplaySpec] = [*missing, *missing_captures]
@@ -364,7 +500,7 @@ class Supervisor:
         self.instances = plan_instances(self.stack)
 
         for instance in self.instances:
-            write_server_config(instance, self.stack.server, self.work_dir)
+            write_server_config(instance, self.stack.server, self.work_dir, self.stack)
             assert instance.config_path is not None
             self.servers.append(
                 ManagedProcess(
@@ -378,7 +514,7 @@ class Supervisor:
             )
 
         sync_sources = {
-            camera.name: admit_source(camera.source)
+            camera.name: admit_source(Path(camera.source))
             for camera in cameras
             if camera.sync_group is not None
         }
@@ -401,7 +537,7 @@ class Supervisor:
 
         for instance in self.instances:
             for camera in instance.cameras:
-                info = try_probe(camera.source, ffprobe=self.ffprobe)
+                info = None if camera.is_live else try_probe(camera.source, ffprobe=self.ffprobe)
                 if camera.sync_group is not None:
                     mode = StreamMode.COPY
                     publisher: ManagedProcess | SyncMember = sync_members[camera.name]
@@ -414,7 +550,18 @@ class Supervisor:
                         ffmpeg=self.ffmpeg,
                         log_level=self.ffmpeg_log_level,
                     )
-                    publisher = ManagedProcess(name=camera.name, kind="publisher", command=command)
+                    publisher = (
+                        LivePublisher(
+                            camera,
+                            self.stack.publish_url(camera),
+                            ffmpeg=self.ffmpeg,
+                            ffprobe=self.ffprobe,
+                            log_level=self.ffmpeg_log_level,
+                            max_restarts=self.max_restarts,
+                        )
+                        if camera.is_live
+                        else ManagedProcess(name=camera.name, kind="publisher", command=command)
+                    )
                 runtime = CameraRuntime(
                     camera=camera,
                     instance=instance,
@@ -467,7 +614,14 @@ class Supervisor:
                 raise SupervisorError(f"could not start {server.name}")
 
         for instance in self.instances:
-            if not _wait_for_port("127.0.0.1", instance.rtsp_port, timeout=15.0):
+            host = (
+                self.stack.ingest.host
+                if instance.ingest and self.stack.ingest is not None
+                else "127.0.0.1"
+            )
+            if host in {"0.0.0.0", "::", ""}:
+                host = "127.0.0.1" if host != "::" else "::1"
+            if not _wait_for_port(host, instance.rtsp_port, timeout=15.0):
                 self.shutdown()
                 # The RTSP port is the one being waited on, but MediaMTX exits
                 # if *any* of its listeners collide, so naming only the RTSP
@@ -506,6 +660,9 @@ class Supervisor:
             self._tick_sync_groups()
 
             for process in self._all_processes():
+                if isinstance(process, LivePublisher):
+                    process.tick(now)
+                    continue
                 if process.running:
                     continue
                 if process.process is not None:
@@ -537,6 +694,9 @@ class Supervisor:
                 process.start()
 
             for runtime in self.runtimes:
+                if isinstance(runtime.process, LivePublisher):
+                    runtime.info = runtime.process.info
+                    runtime.mode = effective_mode(runtime.camera, runtime.info)
                 if runtime.scheduler is not None:
                     runtime.scheduler.tick(now)
 
@@ -597,6 +757,9 @@ class Supervisor:
 
         while pending and time.monotonic() < deadline:
             self._tick_sync_groups()
+            for runtime in self.runtimes:
+                if isinstance(runtime.process, LivePublisher):
+                    runtime.process.tick(time.monotonic())
             for instance in self.instances:
                 ready = _ready_paths(instance.api_url)
                 for name in list(pending):
@@ -620,6 +783,22 @@ class Supervisor:
                     "%s: replay did not open RTSP port %s", replay.replay.name, replay.replay.port
                 )
 
+    def _camera_state(self, runtime: CameraRuntime) -> str:
+        process = runtime.process
+        if self._stop.is_set():
+            return "stopped"
+        if isinstance(process, ManagedProcess) and process.suspended:
+            return "suspended"
+        if isinstance(process, LivePublisher):
+            if process.running:
+                return (
+                    "running"
+                    if runtime.camera.name in _ready_paths(runtime.instance.api_url)
+                    else "starting"
+                )
+            return process.state
+        return "running" if process.running else "failed"
+
     def health_snapshot(self) -> dict[str, Any]:
         return {
             "timestamp": time.time(),
@@ -638,7 +817,8 @@ class Supervisor:
                     "name": runtime.camera.name,
                     "url": runtime.read_url,
                     "mode": runtime.mode.value,
-                    "source": str(runtime.camera.source),
+                    "source": display_source(runtime.camera.source),
+                    "state": self._camera_state(runtime),
                     "running": runtime.process.running,
                     "pid": runtime.process.pid,
                     "restarts": runtime.process.restarts,

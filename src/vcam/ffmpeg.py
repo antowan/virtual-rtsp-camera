@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .models import RTSP_PASSTHROUGH_CODECS, CameraSpec, SimulationMode, StreamMode
 from .probe import MediaInfo
+from .sources import live_input_options
 
 SOFTWARE_ENCODERS = frozenset({"libx264", "libx265"})
 
@@ -29,6 +30,8 @@ def resolve_mode(camera: CameraSpec, info: MediaInfo | None) -> StreamMode:
     """
     if camera.mode is not StreamMode.AUTO:
         return camera.mode
+    if camera.is_live:
+        return StreamMode.COPY
     if info is None or info.codec is None:
         return StreamMode.COPY
     if info.codec.lower() in RTSP_PASSTHROUGH_CODECS:
@@ -87,7 +90,9 @@ def simulation_forces_transcode(camera: CameraSpec, info: MediaInfo | None = Non
     Filters rewrite the pixels and ``degraded`` rewrites the bitstream; neither
     survives passthrough, so both override ``copy``.
     """
-    if camera.simulation.mode is SimulationMode.DEGRADED:
+    if (
+        camera.is_live and camera.simulation.mode is not SimulationMode.NORMAL
+    ) or camera.simulation.mode is SimulationMode.DEGRADED:
         return True
     return bool(simulation_filters(camera, info))
 
@@ -118,16 +123,19 @@ def build_publish_command(
     cmd: list[str] = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", log_level]
 
     # --- input options (order matters: these must precede -i) -----------------
-    if camera.loop:
+    if camera.is_live:
+        cmd += live_input_options(camera.source, camera.source_timeout)
+    elif camera.loop:
         cmd += ["-stream_loop", "-1"]
-    if camera.realtime:
+    if not camera.is_live and camera.realtime:
         cmd += ["-re"]
         if camera.start_offset:
             # The seek below is an *output* option, so ffmpeg has to read and
             # discard the skipped head. Burst through it instead of letting -re
             # pace it in real time, which would delay the stream by start_offset.
             cmd += ["-readrate_initial_burst", _format_seconds(camera.start_offset + 1)]
-    cmd += ["-fflags", "+genpts"]
+    if not camera.is_live:
+        cmd += ["-fflags", "+genpts"]
     cmd += ["-i", str(camera.source)]
 
     # Seeking on the output rather than the input. An input -ss combined with

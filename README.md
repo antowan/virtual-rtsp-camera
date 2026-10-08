@@ -13,7 +13,8 @@
 
 </div>
 
-`vcam` turns local video files into **looping virtual RTSP camera streams**, so video
+`vcam` turns local video files or **live RTSP/UDP sources** into virtual RTSP camera streams,
+looping files or forwarding live video without re-encoding, so video
 analytics pipelines — NVIDIA DeepStream, Frigate, or any RTSP-based CCTV/NVR software —
 can be developed and tested without physical IP cameras.
 
@@ -127,7 +128,7 @@ re-packetises the stream on the way out.
 
 | mode | behaviour |
 | --- | --- |
-| `auto` *(default)* | probe the file; **copy** when it is already H.264/HEVC, otherwise **transcode** |
+| `auto` *(default)* | files: **copy** H.264/HEVC, otherwise **transcode**; live: **copy** clean feeds, **transcode** cameras with faults |
 | `copy` | pure passthrough — just read the video and stream it, no re-encode, near-zero CPU |
 | `transcode` | re-encode with the resolution / fps / bitrate / codec / GOP you ask for |
 
@@ -163,6 +164,23 @@ cameras:
 
 Full reference: [docs/configuration.md](docs/configuration.md) — ports, auth, health
 file, `start_offset`, legacy manifests, and the MediaMTX binary resolution order.
+
+### Live simulator streams
+
+```bash
+uv run vcam import-sim sim-streams.json -o cameras.yaml
+uv run vcam run -c cameras.yaml --health-file /tmp/vcam-health.json
+# -> rtsp://127.0.0.1:8554/<camera-id>
+```
+
+The `eais-sim-streams/1` manifest maps camera id, ingest URL, resolution and fps
+to VCAM settings. Clean streams use `-c:v copy`; faults affect only the configured
+camera. Missing publishers report `waiting-for-source` and reconnect with backoff.
+Add `ingest: {}` to the YAML to run a separate loopback MediaMTX on port 8654.
+Publishers must use the dedicated user, e.g. `rtsp://sim:@127.0.0.1:8654/sim/anpr-front`;
+the manifest's credential-free URL remains valid for VCAM's local reader.
+See [the live-source reference](docs/configuration.md#live-sources-and-simulator-ingest)
+for authentication, timeout and synthetic-publisher verification.
 
 ## Documentation
 

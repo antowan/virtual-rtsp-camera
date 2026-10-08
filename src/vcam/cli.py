@@ -9,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlsplit
 
 import typer
 from pydantic import ValidationError
@@ -56,7 +57,9 @@ from .ntp import apply_offset, has_sys_time_cap, measure_offset, running_in_cont
 from .pcap import backend_version as pcap_backend_version
 from .probe import probe as probe_source
 from .probe import try_probe
-from .supervisor import REPLAY_PASSWORD_ENV, CameraRuntime, Supervisor
+from .sim_manifest import import_sim as import_sim_manifest
+from .sources import is_live_source, parse_source
+from .supervisor import REPLAY_PASSWORD_ENV, CameraRuntime, LivePublisher, Supervisor
 
 console = Console()
 error_console = Console(stderr=True)
@@ -65,7 +68,7 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help=(
-        "Serve local video files as looping virtual RTSP cameras.\n\n"
+        "Serve video files or live sources as virtual RTSP cameras.\n\n"
         "Cameras share one RTSP port and are addressed by path "
         "(rtsp://host:8554/cam1), unless a camera overrides `port` in its config."
     ),
@@ -167,17 +170,23 @@ def _simulation_overrides(
     return overrides
 
 
-def _parse_camera_argument(value: str) -> tuple[str, Path]:
-    """Parse ``NAME=/path/to/file.mp4`` (or a bare path) into a camera tuple."""
-    if "=" in value:
+def _source_name(source: Path | str) -> str:
+    if is_live_source(source):
+        return _slug(Path(urlsplit(str(source)).path).name)
+    return _slug(Path(source).stem)
+
+
+def _parse_camera_argument(value: str) -> tuple[str, Path | str]:
+    """Parse ``NAME=SOURCE`` or a bare file/live URL into a camera tuple."""
+    if "=" in value and not is_live_source(value):
         name, _, source = value.partition("=")
         name = name.strip()
         source = source.strip()
         if not name or not source:
             raise typer.BadParameter(f"expected NAME=PATH, got {value!r}")
-        return name, Path(source).expanduser()
-    path = Path(value).expanduser()
-    return _slug(path.stem), path
+        return name, parse_source(source)
+    source_value = parse_source(value)
+    return _source_name(source_value), source_value
 
 
 def _slug(value: str) -> str:
@@ -249,8 +258,8 @@ def _apply_overrides(
 def run(
     config: ConfigOption = None,
     source: Annotated[
-        Path | None,
-        typer.Option("--source", "-s", help="Video file to serve as a single camera."),
+        str | None,
+        typer.Option("--source", "-s", help="Video file or rtsp:// / udp:// live URL."),
     ] = None,
     name: Annotated[
         str | None,
@@ -260,7 +269,7 @@ def run(
         list[str] | None,
         typer.Option(
             "--camera",
-            help="Repeatable NAME=PATH pair, e.g. --camera cam1=videos/a.mp4.",
+            help="Repeatable NAME=SOURCE pair (file path or live URL).",
         ),
     ] = None,
     host: HostOption = None,
@@ -275,7 +284,7 @@ def run(
         StreamMode | None,
         typer.Option(
             "--mode",
-            help="auto: copy when the source is H.264/HEVC, else transcode.",
+            help="auto: copy H.264/HEVC files and clean live feeds; transcode otherwise.",
         ),
     ] = None,
     loop: Annotated[
@@ -514,17 +523,20 @@ def run(
 def _build_stack(
     *,
     config: Path | None,
-    source: Path | None,
+    source: Path | str | None,
     name: str | None,
     cameras: list[str] | None,
 ) -> CameraStack:
     inline: list[CameraSpec] = []
 
-    if source is not None:
-        inline.append(CameraSpec(name=name or _slug(source.stem), source=Path(source).expanduser()))
-    for entry in cameras or []:
-        camera_name, camera_source = _parse_camera_argument(entry)
-        inline.append(CameraSpec(name=camera_name, source=camera_source))
+    try:
+        if source is not None:
+            inline.append(CameraSpec(name=name or _source_name(source), source=source))
+        for entry in cameras or []:
+            camera_name, camera_source = _parse_camera_argument(entry)
+            inline.append(CameraSpec(name=camera_name, source=camera_source))
+    except ValueError as exc:
+        raise _fail(f"invalid camera definition: {exc}") from exc
 
     if inline and config is not None:
         raise _fail("use either --config or --source/--camera, not both")
@@ -593,7 +605,7 @@ def _print_dry_run(stack: CameraStack, ffmpeg_log_level: str) -> None:
     instances = plan_instances(stack)
     for instance in instances:
         console.print(f"[bold]# mediamtx-{instance.rtsp_port}.yml[/]")
-        console.print(render_server_config_yaml(instance, stack.server).rstrip())
+        console.print(render_server_config_yaml(instance, stack.server, stack).rstrip())
         console.print()
 
     console.print("[bold]# publishers[/]")
@@ -605,7 +617,11 @@ def _print_dry_run(stack: CameraStack, ffmpeg_log_level: str) -> None:
                 "source admission and shared startup barrier occur on run"
             )
             continue
-        info = try_probe(camera.source) if camera.source.is_file() else None
+        info = (
+            try_probe(camera.source)
+            if isinstance(camera.source, Path) and camera.source.is_file()
+            else None
+        )
         command = build_publish_command(
             camera,
             stack.publish_url(camera),
@@ -628,6 +644,7 @@ def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
         table.add_column("camera", style="bold cyan")
         table.add_column("url")
         table.add_column("mode")
+        table.add_column("state")
         table.add_column("sim")
         if any(camera.sync_group is not None for camera in stack.cameras):
             table.add_column("sync group")
@@ -637,6 +654,9 @@ def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
                 runtime.camera.name,
                 runtime.read_url_with_credentials,
                 runtime.mode.value,
+                runtime.process.state
+                if isinstance(runtime.process, LivePublisher)
+                else ("running" if runtime.process.running else "failed"),
                 _simulation_label(runtime.camera),
             ]
             if any(camera.sync_group is not None for camera in stack.cameras):
@@ -701,7 +721,7 @@ def _print_camera_table(stack: CameraStack, host: str | None = None) -> None:
             row.append(camera.sync_group or "-")
         table.add_row(
             *row,
-            "yes" if camera.loop else "no",
+            "-" if camera.is_live else ("yes" if camera.loop else "no"),
             f"{camera.start_offset:g}s",
             str(camera.source),
         )
@@ -711,6 +731,28 @@ def _print_camera_table(stack: CameraStack, host: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 # config management
 # ---------------------------------------------------------------------------
+
+
+@app.command("import-sim")
+def import_sim(
+    manifest: Annotated[Path, typer.Argument(help="sim-streams.json (eais-sim-streams/1).")],
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write YAML here (default: stdout).")
+    ] = None,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
+) -> None:
+    """Convert simulator streams into a camera stack, without probing or connecting."""
+    if output is not None and output.exists() and not force:
+        raise _fail(f"{output} already exists (use --force to overwrite)")
+    try:
+        stack = import_sim_manifest(manifest)
+        if output is None:
+            print(dump_stack(stack), end="")
+        else:
+            save_stack(stack, output)
+            console.print(f"wrote [bold]{output}[/]")
+    except (ConfigError, OSError) as exc:
+        raise _fail(str(exc)) from exc
 
 
 @app.command()
@@ -877,7 +919,7 @@ def generate(
     # --- summary & write ---
     console.print(f"\n[bold green]Summary[/] — {len(cameras)} camera(s) on port {rtsp_port}:\n")
     for cam in cameras:
-        console.print(f"  [bold]{cam.name}[/]  ({cam.mode.value})  ← {cam.source.name}")
+        console.print(f"  [bold]{cam.name}[/]  ({cam.mode.value})  ← {Path(cam.source).name}")
     console.print()
 
     save_stack(stack, path)
@@ -890,7 +932,7 @@ def generate(
 
 @app.command()
 def add(
-    source: Annotated[Path, typer.Argument(help="Video file to add as a camera.")],
+    source: Annotated[str, typer.Argument(help="Video file or live URL to add as a camera.")],
     config: ConfigOption = None,
     name: Annotated[
         str | None, typer.Option("--name", "-n", help="Camera name (default: file stem).")
@@ -899,7 +941,7 @@ def add(
         StreamMode,
         typer.Option(
             "--mode",
-            help="auto: copy when the source is H.264/HEVC, else transcode.",
+            help="auto: copy H.264/HEVC files and clean live feeds; transcode otherwise.",
         ),
     ] = StreamMode.AUTO,
     simulation: Annotated[
@@ -956,12 +998,15 @@ def add(
 
     overrides = _video_overrides(resolution, fps, bitrate, codec, encoder, gop, None)
     try:
+        parsed_source = parse_source(source)
         stack.cameras.append(
             CameraSpec(
-                name=name or _slug(source.stem),
+                name=name or _source_name(parsed_source),
                 # Stored absolute: relative paths in a config resolve against the
                 # config directory, which is rarely the cwd `add` was run from.
-                source=Path(source).expanduser().resolve(),
+                source=parsed_source.resolve()
+                if isinstance(parsed_source, Path)
+                else parsed_source,
                 mode=mode,
                 start_offset=start_offset,
                 port=port,
@@ -972,6 +1017,8 @@ def add(
         CameraStack.model_validate(stack.model_dump())
     except ValidationError as exc:
         raise _fail(f"invalid camera definition:\n{format_validation_error(exc)}") from exc
+    except ValueError as exc:
+        raise _fail(f"invalid camera definition: {exc}") from exc
 
     save_stack(stack, path)
     console.print(f"added [bold]{stack.cameras[-1].name}[/] to {path}")
@@ -1180,15 +1227,16 @@ def replay(
 
 @app.command()
 def probe(
-    source: Annotated[Path, typer.Argument(help="Video file to inspect.")],
+    source: Annotated[str, typer.Argument(help="Video file or live URL to inspect.")],
 ) -> None:
     """Show how a source file will be handled (codec, size, fps, chosen mode)."""
     try:
-        info = probe_source(Path(source).expanduser())
-    except ProbeError as exc:
+        camera = CameraSpec(name="probe", source=source)
+        info = probe_source(
+            camera.source, timeout=camera.source_timeout if camera.is_live else 20.0
+        )
+    except (ProbeError, ValueError) as exc:
         raise _fail(str(exc)) from exc
-
-    camera = CameraSpec(name="probe", source=Path(source).expanduser())
 
     table = Table(title=str(info.path), title_justify="left")
     table.add_column("property", style="bold")
