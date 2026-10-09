@@ -33,8 +33,6 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Live RTSP/TCP and UDP sources with low-latency, timeout-bounded input,
   clean-stream copy forwarding, per-camera faults and source-outage recovery.
-- Optional loopback simulator ingest with dedicated `sim` publish permission,
-  and `vcam import-sim` for `eais-sim-streams/1` camera manifests.
 - `waiting-for-source` health state, credential-redacted live sources, and an
   opt-in synthetic stream contract test covering format, CPU and recovery.
 
