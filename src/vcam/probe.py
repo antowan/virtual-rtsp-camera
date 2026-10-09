@@ -9,13 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import ProbeError
+from .sources import LIVE_READ_TIMEOUT, display_source, is_live_source, live_input_options
 
 
 @dataclass(frozen=True)
 class MediaInfo:
     """Subset of ffprobe output that matters for republishing."""
 
-    path: Path
+    path: Path | str
     codec: str | None = None
     width: int | None = None
     height: int | None = None
@@ -50,9 +51,10 @@ def _parse_rate(value: str | None) -> float | None:
         return None
 
 
-def probe(source: Path, ffprobe: str = "ffprobe", timeout: float = 20.0) -> MediaInfo:
+def probe(source: Path | str, ffprobe: str = "ffprobe", timeout: float = 20.0) -> MediaInfo:
     """Run ffprobe on *source* and return the parsed :class:`MediaInfo`."""
-    if not source.is_file():
+    live = is_live_source(source)
+    if not live and not Path(source).is_file():
         raise ProbeError(f"source file not found: {source}")
     if shutil.which(ffprobe) is None:
         raise ProbeError(f"{ffprobe} not found on PATH")
@@ -61,25 +63,31 @@ def probe(source: Path, ffprobe: str = "ffprobe", timeout: float = 20.0) -> Medi
         ffprobe,
         "-v",
         "error",
+        *live_input_options(source, min(timeout, LIVE_READ_TIMEOUT)),
+        *(["-analyzeduration", "500000", "-probesize", "1000000"] if live else []),
         "-print_format",
         "json",
         "-show_format",
         "-show_streams",
         str(source),
     ]
+    label = display_source(source)
     try:
         completed = subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
     except subprocess.TimeoutExpired as exc:
-        raise ProbeError(f"ffprobe timed out on {source}") from exc
+        raise ProbeError(f"ffprobe timed out on {label}") from exc
+    except OSError as exc:
+        raise ProbeError(f"could not execute {ffprobe}: {exc}") from exc
 
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
-        raise ProbeError(f"ffprobe failed on {source}: {detail or completed.returncode}")
+        detail = detail.replace(str(source), label)
+        raise ProbeError(f"ffprobe failed on {label}: {detail or completed.returncode}")
 
     try:
         payload = json.loads(completed.stdout.decode("utf-8", errors="replace"))
     except json.JSONDecodeError as exc:
-        raise ProbeError(f"could not parse ffprobe output for {source}") from exc
+        raise ProbeError(f"could not parse ffprobe output for {label}") from exc
 
     streams = payload.get("streams") or []
     video = next((s for s in streams if s.get("codec_type") == "video"), None)
@@ -118,9 +126,11 @@ def probe(source: Path, ffprobe: str = "ffprobe", timeout: float = 20.0) -> Medi
     )
 
 
-def try_probe(source: Path, ffprobe: str = "ffprobe") -> MediaInfo | None:
+def try_probe(source: Path | str, ffprobe: str = "ffprobe") -> MediaInfo | None:
     """Probe *source*, returning ``None`` instead of raising on failure."""
     try:
-        return probe(source, ffprobe=ffprobe)
+        return probe(
+            source, ffprobe=ffprobe, timeout=LIVE_READ_TIMEOUT if is_live_source(source) else 20.0
+        )
     except ProbeError:
         return None

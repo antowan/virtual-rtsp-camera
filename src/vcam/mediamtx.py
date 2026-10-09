@@ -31,6 +31,7 @@ class ServerInstance:
     rtp_port: int = 8000
     cameras: list[CameraSpec] = field(default_factory=list)
     config_path: Path | None = None
+    ingest: bool = False
 
     @property
     def label(self) -> str:
@@ -52,10 +53,15 @@ def plan_instances(stack: CameraStack) -> list[ServerInstance]:
         groups.setdefault(stack.effective_port(camera), []).append(camera)
 
     instances: list[ServerInstance] = []
-    taken: set[int] = set(groups)
+    taken: set[int] = set(groups) | {replay.port for replay in stack.enabled_replays}
+    if stack.ingest is not None:
+        taken.add(stack.ingest.rtsp_port)
     next_api = stack.server.api_port
     next_rtp = stack.server.rtp_port
-    for rtsp_port in sorted(groups):
+    ports = sorted(groups)
+    if stack.ingest is not None:
+        ports.append(stack.ingest.rtsp_port)
+    for rtsp_port in ports:
         # The API always listens on loopback (see `apiAddress` below), so the
         # port has to be probed there rather than on the wildcard address.
         api_port = _next_free_port(next_api, taken, host=API_HOST)
@@ -73,7 +79,8 @@ def plan_instances(stack: CameraStack) -> list[ServerInstance]:
                 rtsp_port=rtsp_port,
                 api_port=api_port,
                 rtp_port=rtp_port,
-                cameras=groups[rtsp_port],
+                cameras=groups.get(rtsp_port, []),
+                ingest=stack.ingest is not None and rtsp_port == stack.ingest.rtsp_port,
             )
         )
     return instances
@@ -123,6 +130,8 @@ def _next_free_udp_block(start: int, taken: set[int]) -> int:
 def _listen_address(host: str, port: int) -> str:
     if host in ("0.0.0.0", "::", ""):
         return f":{port}"
+    if ":" in host:
+        return f"[{host}]:{port}"
     return f"{host}:{port}"
 
 
@@ -172,9 +181,11 @@ def build_auth_users(server: ServerSpec) -> list[dict[str, Any]]:
     return [local_publisher, reader, admin_user]
 
 
-def render_server_config(instance: ServerInstance, server: ServerSpec) -> dict[str, Any]:
+def render_server_config(
+    instance: ServerInstance, server: ServerSpec, stack: CameraStack | None = None
+) -> dict[str, Any]:
     """Build the MediaMTX configuration mapping for one server instance."""
-    return {
+    config = {
         "logLevel": server.log_level,
         "logDestinations": ["stdout"],
         "readTimeout": server.read_timeout,
@@ -205,18 +216,54 @@ def render_server_config(instance: ServerInstance, server: ServerSpec) -> dict[s
         "authInternalUsers": build_auth_users(server),
         "paths": {camera.path_suffix(): {} for camera in instance.cameras},
     }
+    if instance.ingest:
+        assert stack is not None and stack.ingest is not None
+        ingest = stack.ingest
+        local = ingest.host in {"127.0.0.1", "::1", "localhost"}
+        config.update(
+            rtspAddress=_listen_address(ingest.host, instance.rtsp_port),
+            rtspTransports=["tcp"],
+            authInternalUsers=[
+                {
+                    "user": "sim",
+                    "pass": ingest.password,
+                    "ips": list(LOCALHOST_IPS) if local else [],
+                    "permissions": [{"action": "publish", "path": "~^sim/.+$"}],
+                },
+                {
+                    "user": "any",
+                    "pass": "",
+                    "ips": list(LOCALHOST_IPS),
+                    "permissions": [
+                        {"action": "read", "path": "~^sim/.+$"},
+                        {"action": "api"},
+                    ],
+                },
+            ],
+            paths={"~^sim/.+$": {}},
+        )
+    return config
 
 
-def render_server_config_yaml(instance: ServerInstance, server: ServerSpec) -> str:
+def render_server_config_yaml(
+    instance: ServerInstance, server: ServerSpec, stack: CameraStack | None = None
+) -> str:
     return yaml.safe_dump(
-        render_server_config(instance, server), sort_keys=False, default_flow_style=False
+        render_server_config(instance, server, stack), sort_keys=False, default_flow_style=False
     )
 
 
-def write_server_config(instance: ServerInstance, server: ServerSpec, directory: Path) -> Path:
+def write_server_config(
+    instance: ServerInstance,
+    server: ServerSpec,
+    directory: Path,
+    stack: CameraStack | None = None,
+) -> Path:
     """Write the generated config for *instance* and record its path."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"mediamtx-{instance.rtsp_port}.yml"
-    path.write_text(render_server_config_yaml(instance, server), encoding="utf-8")
+    path.touch(mode=0o600, exist_ok=True)
+    path.chmod(0o600)
+    path.write_text(render_server_config_yaml(instance, server, stack), encoding="utf-8")
     instance.config_path = path
     return path

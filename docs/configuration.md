@@ -74,6 +74,99 @@ Legacy `streams.yaml` manifests (`streams:` with `offset_seconds`) are accepted 
 uv run vcam list -c streams.yaml
 ```
 
+## Live sources and simulator ingest
+
+`source` can also be an `rtsp://` or `udp://` URL, preserved exactly (including
+query parameters). Live inputs ignore `loop` and `realtime`: no `-stream_loop`
+or `-re` is applied, no file is required, and `start_offset` must be zero.
+They cannot join a `sync_group`, which remains file-replay only. Simulator
+cross-camera alignment and ground truth use the simulator manifest's timing
+metadata, not VCAM's replay clock or RTCP wall-clock timestamps.
+
+```yaml
+ingest:                       # optional; omit if an ingest already runs elsewhere
+  host: 127.0.0.1              # loopback by default
+  rtsp_port: 8654
+  password: ""                # dedicated "sim" user; set a password for off-host publishing
+cameras:
+  - name: anpr-front
+    source: rtsp://127.0.0.1:8654/sim/anpr-front
+    source_timeout: 5         # live socket read / probe timeout in seconds (0 < value <= 60)
+    video:
+      resolution: 1920x1080
+      fps: 30
+  - name: noisy
+    source: rtsp://127.0.0.1:8654/sim/overview
+    simulation:
+      mode: noise
+```
+
+Live `auto` selects **copy** without faults and **transcode** with a non-normal
+simulation or custom filters. Video settings apply only when transcoding.
+RTSP inputs use TCP; both live protocols use `-fflags nobuffer` and a bounded
+socket read timeout. Probes are bounded too and run independently so an absent
+camera cannot stall other publishers' supervision. Live probe analysis is capped
+at 0.5 seconds of media / 1 MB, rather than the longer file-probe defaults.
+File source behavior is unchanged.
+
+The optional ingest is a separately supervised MediaMTX instance, TCP-only,
+with paths `~^sim/.+$`. Only user `sim` can publish; anonymous reads and API
+access are loopback-only. Camera-facing servers and their authentication are
+unchanged. Ingest RTSP, API and UDP port allocations cannot overlap the
+camera/replay listeners. Generated configs are owner-readable/writable only.
+For remote publishing, explicitly change `ingest.host` and set a non-empty
+`ingest.password` (required for non-loopback hosts); keep its local API and
+reader restrictions.
+
+The simulator publisher URL must include the username:
+`rtsp://sim:@127.0.0.1:8654/sim/<camera-id>` (or `sim:<password>@`).
+The credential-free `ingest_url` in the manifest is still readable locally.
+An existing anonymous simulator development ingest can also be used: leave
+the VCAM `ingest` block out to avoid starting a second listener.
+
+### Importing `sim-streams.json`
+
+```bash
+uv run vcam import-sim sim-streams.json                 # YAML to stdout
+uv run vcam import-sim sim-streams.json -o cameras.yaml # refuses overwrite without --force
+```
+
+The importer requires schema `eais-sim-streams/1`, nonempty unique camera ids,
+live `ingest_url`, positive width/height and fps. It maps id to name, URL to
+source, width/height to `video.resolution`, fps to `video.fps`, and the optional
+`hevc` codec to `video.codec: h265`. It ignores unrelated metadata and does not
+probe streams, start ingest, watch for manifest updates, or consume ground-truth
+events (including the optional SSE endpoint). Add `ingest: {}` explicitly if
+VCAM should own ingest.
+
+### Synthetic verification (no Unity required)
+
+Start VCAM with the example above, then publish a synthetic camera on macOS:
+
+```bash
+ffmpeg -re -f lavfi -i testsrc2=size=1920x1080:rate=30 \
+  -c:v h264_videotoolbox -profile:v high -pix_fmt yuv420p -g 30 -bf 0 \
+  -f rtsp -rtsp_transport tcp rtsp://sim:@127.0.0.1:8654/sim/anpr-front
+ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/anpr-front
+```
+
+On Linux use `libx264 -preset veryfast -tune zerolatency` instead of
+`h264_videotoolbox`. The opt-in integration test starts and cleans up its own
+stack and publisher (ports 8554/8654 must be free):
+
+```bash
+uv run vcam install-server
+VCAM_LIVE_TESTS=1 uv run pytest tests/test_live_integration.py -s
+```
+
+It compares ingest/output codec, profile, dimensions, frame rate, pixel format,
+B-frames and color tags; measures the copy forwarder's CPU over 15 seconds
+(must be below 5% of one core); verifies one clean and one faulted camera's
+encoder commands; kills/restarts the source and checks waiting/recovery with
+`--max-restarts 0`; rejects anonymous/wrong-user ingest publishers; and checks
+UDP forwarding and read-timeout recovery. This is a stream-contract test,
+not a GPU benchmark.
+
 ## How `start_offset` behaves
 
 To align rather than de-sync a set of cameras, assign the same `sync_group` to
@@ -126,6 +219,10 @@ uv run vcam run -v                                    # debug logging
 
 Publishers that exit are restarted with exponential backoff (1s → 30s); `--max-restarts`
 caps that. Scheduled `flaky` dropouts are exempt — they are planned stops, not crashes.
+Live-source outages are also exempt from that budget and retry indefinitely,
+with 1s to 30s backoff. Health cameras include `state`: `waiting-for-source`,
+`starting`, `running`, `failed`, `suspended` or `stopped`. A source that is
+reachable but whose publisher repeatedly fails still respects `--max-restarts`.
 `Ctrl-C` stops the publishers and then the servers.
 
 ## Server binary
