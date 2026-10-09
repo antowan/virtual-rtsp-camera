@@ -114,8 +114,9 @@ with paths `~^sim/.+$`. Only user `sim` can publish; anonymous reads and API
 access are loopback-only. Camera-facing servers and their authentication are
 unchanged. Ingest RTSP, API and UDP port allocations cannot overlap the
 camera/replay listeners. Generated configs are owner-readable/writable only.
-For remote publishing, explicitly change `ingest.host` and set `ingest.password`;
-keep its local API and reader restrictions.
+For remote publishing, explicitly change `ingest.host` and set a non-empty
+`ingest.password` (required for non-loopback hosts); keep its local API and
+reader restrictions.
 
 The simulator publisher URL must include the username:
 `rtsp://sim:@127.0.0.1:8654/sim/<camera-id>` (or `sim:<password>@`).

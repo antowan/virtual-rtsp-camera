@@ -209,6 +209,14 @@ def test_inline_live_dry_run_does_not_probe(args: list[str]) -> None:
     assert "-stream_loop" not in result.output
 
 
+def test_inline_live_dry_run_redacts_source_credentials() -> None:
+    secret_url = URL.replace("127.0.0.1", "sim:review-secret@127.0.0.1")
+    result = runner.invoke(app, ["run", "--source", secret_url, "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "review-secret" not in result.output
+    assert "rtsp://127.0.0.1:8654/sim/anpr-front" in result.output
+
+
 def test_add_live_url(tmp_path: Path) -> None:
     path = tmp_path / "cameras.yaml"
     path.write_text(dump_stack(CameraStack(cameras=[CameraSpec(name="other", source=URL)])))
@@ -241,6 +249,16 @@ def test_ingest_port_collisions_rejected() -> None:
         CameraStack(
             ingest=IngestSpec(rtsp_port=8554), cameras=[CameraSpec(name="front", source=URL)]
         )
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.10", "::"])
+def test_remote_ingest_requires_password(host: str) -> None:
+    with pytest.raises(ValidationError, match="password is required"):
+        IngestSpec(host=host)
+
+
+def test_loopback_ingest_allows_empty_password() -> None:
+    assert IngestSpec(host="localhost").password == ""
 
 
 def test_supervisor_prepares_absent_live_sources(tmp_path: Path) -> None:

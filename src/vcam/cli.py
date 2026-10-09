@@ -58,7 +58,7 @@ from .pcap import backend_version as pcap_backend_version
 from .probe import probe as probe_source
 from .probe import try_probe
 from .sim_manifest import import_sim as import_sim_manifest
-from .sources import is_live_source, parse_source
+from .sources import display_source, is_live_source, parse_source
 from .supervisor import REPLAY_PASSWORD_ENV, CameraRuntime, LivePublisher, Supervisor
 
 console = Console()
@@ -629,7 +629,12 @@ def _print_dry_run(stack: CameraStack, ffmpeg_log_level: str) -> None:
             log_level=ffmpeg_log_level,
         )
         console.print(f"[dim]# {camera.name} -> {stack.read_url(camera)}[/]")
-        console.print(" ".join(_quote(part) for part in command))
+        console.print(
+            " ".join(
+                _quote(display_source(part) if part == str(camera.source) else part)
+                for part in command
+            )
+        )
     console.print()
     _print_camera_table(stack)
 
@@ -661,7 +666,7 @@ def _print_ready(stack: CameraStack, runtimes: list[CameraRuntime]) -> None:
             ]
             if any(camera.sync_group is not None for camera in stack.cameras):
                 row.append(runtime.camera.sync_group or "-")
-            table.add_row(*row, str(runtime.camera.source))
+            table.add_row(*row, display_source(runtime.camera.source))
         console.print(table)
     _print_replay_table(stack)
     if stack.server.auth is not None:
@@ -723,7 +728,7 @@ def _print_camera_table(stack: CameraStack, host: str | None = None) -> None:
             *row,
             "-" if camera.is_live else ("yes" if camera.loop else "no"),
             f"{camera.start_offset:g}s",
-            str(camera.source),
+            display_source(camera.source),
         )
     console.print(table)
 

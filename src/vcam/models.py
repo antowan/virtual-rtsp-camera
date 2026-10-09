@@ -351,6 +351,12 @@ class IngestSpec(BaseModel):
     def _check_password(cls, value: str) -> str:
         return AuthSpec._check_credential(value) if value else value
 
+    @model_validator(mode="after")
+    def _require_password_for_remote_host(self) -> IngestSpec:
+        if self.host not in {"127.0.0.1", "::1", "localhost"} and not self.password:
+            raise ValueError("ingest.password is required when ingest.host is not loopback")
+        return self
+
 
 class CameraStack(BaseModel):
     """Top-level configuration: one server definition, its cameras and replays."""
