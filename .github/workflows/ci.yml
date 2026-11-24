@@ -24,18 +24,18 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --frozen --extra control
 
       # Style and typing are checked once, not per matrix entry: they do not
       # vary by OS or interpreter, and ruff pins the 3.10 target itself.
       - name: Ruff (lint)
-        run: uv run ruff check .
+        run: uv run --frozen --extra control ruff check .
 
       - name: Ruff (format)
-        run: uv run ruff format --check .
+        run: uv run --frozen --extra control ruff format --check .
 
       - name: Mypy
-        run: uv run mypy
+        run: uv run --frozen --extra control mypy
 
   test:
     name: test (${{ matrix.os }} / py${{ matrix.python-version }})
@@ -57,11 +57,27 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: uv sync --extra prototype --python ${{ matrix.python-version }}
+      - name: Verify base CLI without the control extra
+        run: |
+          uv sync --frozen --no-dev --python ${{ matrix.python-version }}
+          .venv/bin/python -c 'import importlib.util; assert importlib.util.find_spec("fastapi") is None'
+          .venv/bin/vcam run --source clip.mp4 --dry-run
 
       - name: Run tests
-        run: uv run --extra prototype --python ${{ matrix.python-version }} pytest
+        run: uv run --frozen --extra control --extra prototype --python ${{ matrix.python-version }} pytest
+
+      - name: Live API, CLI, and RTSP continuity
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        timeout-minutes: 10
+        env:
+          VCAM_LIVE_TESTS: "1"
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -qq -y ffmpeg
+          fi
+          .venv/bin/vcam install-server
+          .venv/bin/pytest tests/test_live_integration.py tests/test_control_contract.py -k 'control_cli_adds_camera or control_requires_confirmation or inline_control_process'
 
   # Push konekuto/vcam:main to Docker Hub on every merge to main.
   # Requires DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets.
@@ -159,6 +175,10 @@ jobs:
 
       - name: Smoke-test the image
         run: docker run --rm vcam:ci --version
+
+      - name: Exercise authenticated orchestration in the packaged image
+        timeout-minutes: 3
+        run: docker run --rm --network none -i --entrypoint bash vcam:ci -s < scripts/smoke-control-container.sh
 
       - name: Verify packaged synchronization backend
         run: >-

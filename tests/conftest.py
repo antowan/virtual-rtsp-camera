@@ -13,6 +13,14 @@ from vcam.probe import MediaInfo
 
 
 @pytest.fixture(autouse=True)
+def isolate_control_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests and their CLI subprocesses away from the operator's state and endpoints."""
+    monkeypatch.setenv("VCAM_STATE_DIR", str(tmp_path / "state"))
+    for name in ("VCAM_ENDPOINT", "VCAM_CONTROL_ENDPOINT", "VCAM_CONTROL_TOKEN_FILE"):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_thread_leaks() -> object:
     """Fail a test that leaves one of our threads running.
 

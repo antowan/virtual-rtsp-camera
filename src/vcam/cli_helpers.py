@@ -159,7 +159,8 @@ class RunContext:
 
     Attributes:
         stack: The CameraStack defining all cameras to publish.
-        mediamtx_binary: Path to the MediaMTX binary.
+        mediamtx_binary: Path to the MediaMTX binary; None when no MediaMTX
+            instance is needed (a replay-only stack).
         work_dir: Working directory for generated configs.
         ffmpeg_log_level: Log level for ffmpeg (e.g. "warning", "info").
         health_file: Optional path to write JSON health snapshots every 5s.
@@ -169,7 +170,7 @@ class RunContext:
     """
 
     stack: CameraStack
-    mediamtx_binary: Path
+    mediamtx_binary: Path | None
     work_dir: Path
     ffmpeg_log_level: str = "warning"
     health_file: Path | None = None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from typer.testing import CliRunner
@@ -131,3 +132,62 @@ def test_urls_includes_replays(tmp_path: Path, capture: Path) -> None:
     result = invoke("urls", "--config", str(config), "--host", "cam.local")
     assert result.exit_code == 0
     assert result.output.strip() == "rtsp://cam.local:8555/fault"
+
+
+class _RecordingSupervisor:
+    """Stands in for Supervisor so `vcam run` can be driven without processes."""
+
+    created: ClassVar[list[Path | None]] = []
+
+    def __init__(self, stack, mediamtx_binary, **_kwargs) -> None:
+        type(self).created.append(mediamtx_binary)
+
+    def run(self) -> int:
+        return 0
+
+    def shutdown(self) -> None:
+        pass
+
+
+@pytest.fixture
+def recording_supervisor(monkeypatch: pytest.MonkeyPatch) -> list[Path | None]:
+    created: list[Path | None] = []
+    monkeypatch.setattr(_RecordingSupervisor, "created", created)
+    monkeypatch.setattr("vcam.cli.Supervisor", _RecordingSupervisor)
+    return created
+
+
+def test_run_serves_a_replay_only_config_without_mediamtx(
+    capture: Path, recording_supervisor: list[Path | None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_mediamtx(*_args, **_kwargs):
+        raise AssertionError("a replay-only stack must not resolve MediaMTX")
+
+    monkeypatch.setattr("vcam.cli.binaries.resolve_binary", no_mediamtx)
+    config = capture.parent / "cameras.yaml"
+    config.write_text(f"replays:\n  - name: fault\n    source: {capture.name}\n    port: 8655\n")
+
+    result = invoke("run", "-c", str(config), "--no-download")
+
+    assert result.exit_code == 0, result.output
+    assert recording_supervisor == [None]
+
+
+def test_run_resolves_mediamtx_when_a_replay_stack_has_an_ingest(
+    capture: Path,
+    tmp_path: Path,
+    recording_supervisor: list[Path | None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary = tmp_path / "mediamtx"
+    monkeypatch.setattr("vcam.cli.binaries.resolve_binary", lambda *_a, **_k: binary)
+    config = capture.parent / "cameras.yaml"
+    config.write_text(
+        "ingest:\n  rtsp_port: 8656\n"
+        f"replays:\n  - name: fault\n    source: {capture.name}\n    port: 8655\n"
+    )
+
+    result = invoke("run", "-c", str(config))
+
+    assert result.exit_code == 0, result.output
+    assert recording_supervisor == [binary]

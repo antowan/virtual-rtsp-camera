@@ -225,6 +225,40 @@ with 1s to 30s backoff. Health cameras include `state`: `waiting-for-source`,
 reachable but whose publisher repeatedly fails still respects `--max-restarts`.
 `Ctrl-C` stops the publishers and then the servers.
 
+## Changing cameras while running
+
+`vcam run --control` (or `control: {enabled: true}` in the YAML) starts an
+authenticated control API next to the engine; see [the control API](control-api.md)
+for the server, credentials and REST contract. The YAML stays the source of
+truth: granular camera changes (`vcam camera add|edit|remove|enable|disable`) are
+written back with comments preserved and applied to that camera only — other
+publishers and their readers keep running. `vcam camera start|stop|restart` and
+`vcam engine …` are runtime-only. Changes to `server`, `ingest`, `replays` or
+`sync_group` members restart every stream, so they go through an explicit
+`vcam config plan FILE` / `vcam config apply FILE --allow-disruption`.
+Hand edits are never picked up on their own: `vcam config reload` previews them
+and `--apply` applies them.
+
+The client commands find the engine that owns `-c cameras.yaml` through a local
+descriptor and check the engine's identity before sending anything. If that engine
+is unreachable, or an explicit `--endpoint` fails, the command errors instead of
+editing the file behind the engine's back. `--endpoint` takes precedence over
+`VCAM_ENDPOINT`, then `VCAM_CONTROL_ENDPOINT`. With an explicit endpoint, media
+paths belong to the engine; neither a local YAML nor a local clip is needed.
+Do not combine an endpoint with `-c` or `--offline`.
+
+With no engine running, `vcam add`, `list`, `urls` and `show` work offline.
+`--offline` reads the file even when a controlled engine is running, but cannot
+bypass its lock to write. URLs returned by a running engine never contain
+reader credentials (offline `vcam urls` still includes them). `probe` and
+`doctor` run locally by default; target an endpoint or explicitly pass `-c`
+to run them on an engine. Use `--json` for scripts and `--no-wait` on a live
+mutation to receive an operation ID instead of waiting for completion.
+
+If a change is saved but a camera fails to start, the command says so; fix the
+cause and retry with `vcam config reload --apply` or `vcam camera start NAME`.
+A camera held with `vcam camera stop` stays stopped across `vcam engine restart`.
+
 ## Server binary
 
 Resolution order: `--mediamtx-binary` → `$VCAM_MEDIAMTX_BIN` → `mediamtx` on `PATH` →
