@@ -27,6 +27,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- Update the default MediaMTX download from `v1.20.1` to `v1.21.4`, which
+  includes `golang.org/x/net` `v0.62.0`.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added
