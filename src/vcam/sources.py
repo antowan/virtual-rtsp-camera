@@ -51,7 +51,8 @@ def display_source(source: Path | str) -> str:
     )
 
 
-_LOG_URL = re.compile(r"""(?:rtsp|udp)://[^\s'"<>]+""")
+# Apostrophes are legal in URI userinfo; stopping there would leak the rest.
+_LOG_URL = re.compile(r"""(?:rtsp|udp)://[^\s"<>]+""")
 _LOG_AUTH = re.compile(r"(?i)\b(Bearer|Basic)\s+[^\s,;]+")
 
 

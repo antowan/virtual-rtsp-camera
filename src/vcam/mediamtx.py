@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 import yaml
 
@@ -26,6 +26,9 @@ API_HOST = "127.0.0.1"
 
 #: Number of consecutive UDP ports MediaMTX reserves for RTP/RTCP/SRTP/multicast.
 UDP_BLOCK_SIZE = 8
+
+#: The API is loopback-only, so never route it through an environment proxy.
+_API_OPENER = build_opener(ProxyHandler({}))
 
 
 @dataclass
@@ -325,7 +328,7 @@ class MediaMTXClient:
             headers={"Content-Type": "application/json"} if data is not None else {},
         )
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with _API_OPENER.open(request, timeout=self.timeout) as response:
                 status, raw = response.status, response.read()
         except HTTPError as exc:
             status, raw = exc.code, exc.read()

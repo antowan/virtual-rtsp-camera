@@ -7,7 +7,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, with_config
 from typing_extensions import TypedDict
 
-from .models import CAMERA_NAME_RE, SimulationSpec, StreamMode, Transport, VideoSettings
+from .models import (
+    CAMERA_NAME_RE,
+    SimulationMode,
+    StreamMode,
+    Transport,
+    VideoCodec,
+)
 
 
 class RequestBody(BaseModel):
@@ -20,22 +26,45 @@ class CameraRef(RequestBody):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class VideoPatch(TypedDict, total=False):
+    codec: VideoCodec | None
+    encoder: str | None
+    resolution: str | None
+    fps: float | None
+    bitrate: str | None
+    gop: int | None
+    preset: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
+class SimulationPatch(TypedDict, total=False):
+    mode: SimulationMode | None
+    noise_level: int | None
+    interval: float | None
+    duration: float | None
+    filters: str | None
+
+
+@with_config(ConfigDict(extra="forbid"))
 class CameraPatch(TypedDict, total=False):
-    """Only supplied keys are merged; the resulting CameraSpec is validated whole."""
+    """RFC 7396 merge patch: ``null`` resets a field to its default.
+
+    Only supplied keys are merged; the resulting CameraSpec is validated whole.
+    """
 
     name: str
     source: str
-    source_timeout: float
-    enabled: bool
-    loop: bool
-    realtime: bool
-    mode: StreamMode
-    start_offset: float
-    transport: Transport
-    audio: bool
+    source_timeout: float | None
+    enabled: bool | None
+    loop: bool | None
+    realtime: bool | None
+    mode: StreamMode | None
+    start_offset: float | None
+    transport: Transport | None
+    audio: bool | None
     port: int | None
-    video: VideoSettings
-    simulation: SimulationSpec
+    video: VideoPatch | None
+    simulation: SimulationPatch | None
     sync_group: str | None
 
 

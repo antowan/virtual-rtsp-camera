@@ -20,8 +20,6 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.request import urlopen
 
 from .errors import ProbeError, SupervisorError
 from .ffmpeg import build_publish_command, effective_mode
@@ -1371,12 +1369,7 @@ def _wait_for_port(
 def _ready_paths(api_url: str) -> set[str]:
     """Names of paths currently receiving data, via the MediaMTX HTTP API."""
     try:
-        with urlopen(f"{api_url}/v3/paths/list", timeout=3) as response:
-            payload = json.loads(response.read().decode("utf-8", errors="replace"))
-    except (URLError, TimeoutError, json.JSONDecodeError, OSError):
+        paths = MediaMTXClient(api_url).list_paths()
+    except MediaMTXAPIError:
         return set()
-    return {
-        item.get("name", "")
-        for item in payload.get("items", [])
-        if item.get("ready") and item.get("name")
-    }
+    return {name for name, item in paths.items() if item.get("ready")}

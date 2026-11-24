@@ -122,7 +122,7 @@ to `/api/v1`.
 | --- | --- |
 | `GET /status`, `/health`, `/ready` | Engine identity/revisions and observed state; stream health; control command readiness. `/ready` remains available when orchestration is intentionally stopped or empty. |
 | `GET /cameras`, `/cameras/{port}/{name}`, `/urls` | Camera definitions, observed status, and credential-free playback URLs. Names need only be unique **on the same RTSP port**. `/urls` excludes disabled streams unless `include_disabled=true`. |
-| `POST /cameras`, `PATCH` or `DELETE /cameras/{port}/{name}` | Create, merge supplied fields, or remove a camera. `{"enabled":false}` disables persistently. File paths are interpreted on the engine host, relative to the config; files are not uploaded. |
+| `POST /cameras`, `PATCH` or `DELETE /cameras/{port}/{name}` | Create, merge supplied fields, or remove a camera. `PATCH` is an RFC 7396 merge patch: `null` resets a field (including a nested `video` or `simulation` field) to its default. `{"enabled":false}` disables persistently. File paths are interpreted on the engine host, relative to the config (the symlink target when the config is a symlink); files are not uploaded. |
 | `POST /cameras/{port}/{name}/actions` | `{"action":"start"}`, `stop` or `restart`: change transient playback without editing YAML. |
 | `POST /engine/actions` | Start, stop or restart stream orchestration. Stop/restart require `"allow_disruption":true`. No action launches or terminates the daemon process. |
 | `GET /replays`, `/replays/{port}/{name}`, `/sync-groups`, `/sync-groups/{name}` | Read-only views of advanced streams and groups. Use a full configuration plan for disruptive changes. |

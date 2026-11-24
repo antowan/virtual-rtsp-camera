@@ -559,6 +559,79 @@ def test_discovery_failure_releases_control_startup_resources(
     assert owner.supervisor.on_tick is None
 
 
+def test_symlinked_config_starts_and_edits_with_one_media_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vcam.cli import _resolve_run_stack
+
+    monkeypatch.setenv("VCAM_STATE_DIR", str(tmp_path / "state"))
+    original, alias = tmp_path / "original", tmp_path / "alias"
+    original.mkdir()
+    alias.mkdir()
+    (original / "clip.mp4").touch()
+    target = original / "cameras.yaml"
+    target.write_text(
+        "control: {enabled: true, port: 0}\ncameras: [{name: cam, source: clip.mp4}]\n"
+    )
+    link = alias / "cameras.yaml"
+    link.symlink_to(target)
+
+    controlled, path, revision, declared = _resolve_run_stack(
+        config=link, source=None, name=None, cameras=None, control=None
+    )
+    assert controlled and path is not None
+    assert declared.cameras[0].source == target.resolve().parent / "clip.mp4"
+    runtime = Supervisor(declared, None, work_dir=tmp_path / "runtime", allow_empty=True)
+    controller = Controller(
+        runtime,
+        path,
+        effective=lambda stack: stack,
+        spec=declared.control,
+        revision=revision,
+        declared=declared,
+    )
+    controller.tick(runtime)
+    plan = controller.plan(None, if_match=None)
+    assert plan["updated"] == [] and not plan["disruptive"]
+
+
+def test_patch_null_resets_defaulted_fields(owner: Controller) -> None:
+    created = owner.create_camera(
+        {
+            "name": "cam",
+            "source": "later.mp4",
+            "enabled": False,
+            "audio": True,
+            "video": {"preset": "slow"},
+            "simulation": {"mode": "flaky", "duration": 2},
+        },
+        if_match=owner.expected_revision,
+        idempotency_key=None,
+    )
+    owner.supervisor._drain_commands()
+    assert owner.operation(created["id"])["applied"]
+    with TestClient(
+        create_app(owner),
+        base_url="http://localhost" + API_PREFIX,
+        headers={"Authorization": f"Bearer {owner.token}"},
+    ) as client:
+        for patch in (
+            {"audio": None, "video": {"preset": None}, "simulation": {"duration": None}},
+            {"video": None, "simulation": None},
+            {"video": {"fps": None}, "simulation": {"filters": None}},
+        ):
+            response = client.patch(
+                "cameras/8554/cam", headers={"If-Match": owner.expected_revision}, json=patch
+            )
+            assert response.status_code == 202, response.text
+            owner.supervisor._drain_commands()
+            assert owner.operation(response.json()["id"])["applied"]
+            text = owner.config_path.read_text()
+            assert "null" not in text and "audio" not in text and "preset" not in text
+            assert "duration" not in text
+        assert set(owner.camera(8554, "cam")[0]["spec"]) == {"name", "source", "enabled"}
+
+
 def test_events_cli_streams_json_through_a_pipe_before_disconnect(owner: Controller) -> None:
     server = ControlServer(owner)
     try:
@@ -682,11 +755,13 @@ def test_discovery_requires_exclusive_owner_and_token_survives_restart(owner: Co
         read_token_file(token_file)
 
 
-def test_read_paths_and_logs_strip_query_credentials(owner: Controller) -> None:
-    source = "rtsp://reader:private-password@camera.example/feed?custom=private-query"
+@pytest.mark.parametrize("password", ["private-password", "pa'private-password"])
+def test_read_paths_and_logs_strip_query_credentials(owner: Controller, password: str) -> None:
+    source = f"rtsp://reader:{password}@camera.example/feed?custom=private-query"
     document = owner.store.read()
+    quoted = source.replace("'", "''")
     owner.store.commit(
-        document.text.replace("cameras: []", f"cameras: [{{name: a, source: '{source}'}}]"),
+        document.text.replace("cameras: []", f"cameras: [{{name: a, source: '{quoted}'}}]"),
         expected_revision=document.revision,
     )
     message = f"failed on {source}; Authorization: Bearer private-token"

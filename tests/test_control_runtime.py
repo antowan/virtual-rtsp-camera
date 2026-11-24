@@ -292,6 +292,22 @@ def test_mediamtx_client_unreachable_raises() -> None:
         MediaMTXClient("http://127.0.0.1:9", timeout=0.5).add_path("cam")
 
 
+def test_mediamtx_api_calls_bypass_environment_proxies(
+    fake_api: tuple[str, dict[str, tuple[int, Any]]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url, responses = fake_api
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    responses["GET /v3/paths/list?itemsPerPage=10000"] = (
+        200,
+        {"items": [{"name": "cam", "ready": True}, {"name": "idle", "ready": False}]},
+    )
+    assert set(MediaMTXClient(url, timeout=1).list_paths()) == {"cam", "idle"}
+    assert supervisor_module._ready_paths(url) == {"cam"}
+
+
 # ---------------------------------------------------------------------------
 # control CLI
 # ---------------------------------------------------------------------------

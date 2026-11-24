@@ -606,8 +606,11 @@ def _resolve_run_stack(
     if control is False:
         return False, path, None, _load_stack_or_exit(path)
     try:
-        document = ConfigStore(path).read()
-        declared = parse_stack_text(document.text, path, allow_empty=True)
+        store = ConfigStore(path)
+        document = store.read()
+        # The controller re-reads the canonical target, so resolve relative
+        # media beside it from the start, not beside a symlink to it.
+        declared = parse_stack_text(document.text, store.path, allow_empty=True)
     except ConfigError as exc:
         if control:
             raise _fail(str(exc)) from exc

@@ -1519,10 +1519,11 @@ def _merge_patch(target: CommentedMap, patch: dict[str, Any]) -> None:
     for key, value in patch.items():
         if value is None:
             target.pop(key, None)
-        elif isinstance(value, dict) and isinstance(target.get(key), CommentedMap):
-            _merge_patch(target[key], value)
         elif isinstance(value, dict):
-            target[key] = CommentedMap(value)
+            # A non-mapping target is patched as an empty object, so nested nulls drop out.
+            if not isinstance(target.get(key), CommentedMap):
+                target[key] = CommentedMap()
+            _merge_patch(target[key], value)
         else:
             target[key] = value
 
