@@ -17,7 +17,7 @@ from urllib.request import urlopen
 
 from .errors import BinaryError
 
-DEFAULT_VERSION = "v1.20.1"
+DEFAULT_VERSION = "v1.21.4"
 RELEASE_BASE = "https://github.com/bluenviron/mediamtx/releases/download"
 ENV_BINARY = "VCAM_MEDIAMTX_BIN"
 ENV_CACHE = "VCAM_CACHE_DIR"

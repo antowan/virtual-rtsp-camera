@@ -27,6 +27,25 @@ The service runs `vcam run -c <absolute config>` and keeps it alive automaticall
 (restarts after crashes).  Put all camera options — ports, modes, codecs — in the
 YAML file.
 
+### Controlling streams without stopping the service
+
+Install the optional server dependencies (for example, `uv tool install '.[control]'`
+from this repository). Set `control: {enabled: true}` in the YAML **before**
+starting the service. A controlled service may start with `cameras: []`: the client can add the first
+stream without reinstalling the service. Without this opt-in, the service
+does not open a control port.
+
+`vcam service status` asks the OS about the service process. `vcam status`
+asks the authenticated engine about its streams. An `engine stop` action stops
+the streams but keeps the control endpoint available; `vcam service stop`
+stops the process and the endpoint. Closing a client does neither.
+
+Run local clients as the service user, with the same config and private control
+state directory. The token is not embedded in the unit or plist. The service
+needs read access to its media, and write access to the **directory** containing
+the YAML for durable camera edits. See the [control API guide](control-api.md)
+for remote clients and TLS.
+
 ## Linux notes
 
 The service runs under your **user systemd** session (`systemctl --user`), so it

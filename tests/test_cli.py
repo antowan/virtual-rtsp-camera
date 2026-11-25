@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from typer.testing import CliRunner
 
 from vcam.cli import app
 from vcam.config import load_stack
+from vcam.control_client import ControlClient
 
 runner = CliRunner()
 
@@ -178,6 +180,39 @@ def test_missing_config_is_reported(tmp_path: Path) -> None:
     result = invoke("list", "--config", str(tmp_path / "nope.yaml"))
     assert result.exit_code == 1
     assert "not found" in result.output
+
+
+def test_camera_remove_refuses_ambiguous_name_and_targets_selected_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = tmp_path / "operator.token"
+    token.touch(mode=0o600)
+    token.write_text("fixture-token\n")
+    writes = []
+
+    def request(_client, method, path, payload=None, **headers):
+        if (method, path) == ("GET", "status"):
+            return {"api_version": 1, "instance_id": "engine"}
+        if (method, path) == ("GET", "cameras"):
+            return {
+                "revision": "current",
+                "cameras": [{"name": "shared", "port": p} for p in (8554, 8555)],
+            }
+        writes.append((method, path, headers.get("revision")))
+        return {"id": "removal", "status": "queued"}
+
+    monkeypatch.setattr(ControlClient, "request", request)
+    args = (
+        "camera", "remove", "shared", "--endpoint", "http://127.0.0.1:8765",
+        "--token-file", str(token), "--no-wait", "--json",
+    )  # fmt: skip
+    refused = invoke(*args)
+    assert refused.exit_code != 0 and not refused.stdout
+    assert "--port" in refused.stderr and not writes
+    accepted = invoke(*args, "--port", "8555")
+    assert accepted.exit_code == 0
+    assert json.loads(accepted.stdout) == {"id": "removal", "status": "queued"}
+    assert writes == [("DELETE", "cameras/8555/shared", "current")]
 
 
 # ---------------------------------------------------------------------------

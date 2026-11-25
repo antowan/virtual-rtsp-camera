@@ -39,6 +39,13 @@ own their listener so no component can re-packetise the captured RTP.
 | `vcam install-server` | Pre-fetch the MediaMTX binary into the cache |
 | `vcam clock-status` | Show clock state; measure NTP offset (read-only) |
 | `vcam service …` | Install / start / stop / status / logs for the background service |
+| `vcam run --control` | Same, plus the authenticated [control API](docs/control-api.md) (`--extra control`) |
+| `vcam status` | Instance, engine state, config revision of the running engine |
+| `vcam camera list\|get\|add\|edit\|remove` | Change one camera live; YAML updated, other streams untouched |
+| `vcam camera enable\|disable\|start\|stop\|restart` | Toggle (YAML) or hold/resume (runtime only) one camera |
+| `vcam engine start\|stop\|restart` | Stop/start all streams; the API stays up (`--allow-disruption`) |
+| `vcam config show\|plan\|apply\|reload` | Preview, then explicitly apply full or hand-edited configs |
+| `vcam events` / `vcam logs` | Follow the change feed / recent engine log records |
 
 ## Use case 1 — one clip, one camera, right now
 
@@ -235,6 +242,26 @@ Read a stream back:
 ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/cam1
 ffplay  -rtsp_transport tcp rtsp://127.0.0.1:8554/cam1
 ```
+
+## Use case 11 — change cameras without restarting
+
+```bash
+uv sync --extra control
+.venv/bin/vcam run -c cameras.yaml --control         # terminal 1
+.venv/bin/vcam camera add ./door.mp4 --name door     # terminal 2: starts only `door`
+.venv/bin/vcam camera edit door --set video.fps=10   # replaces only door's publisher
+.venv/bin/vcam camera stop door                      # runtime hold, YAML unchanged
+.venv/bin/vcam camera disable door                   # written to YAML, stream stopped
+.venv/bin/vcam config reload                         # preview a hand-edited YAML ...
+.venv/bin/vcam config reload --apply                 # ... then apply it explicitly
+.venv/bin/vcam engine stop --allow-disruption        # streams down, API still up
+```
+
+`add`, `list`, `urls`, and `show` discover the owner of the local config;
+`--offline` selects the file instead, but cannot edit a config a running engine
+owns. Use `--endpoint` and `--token-file` to select a remote engine instead of a
+local config. Bare `probe` and `doctor` run locally; pass an endpoint or `-c`
+to run them on the selected engine. Remote file paths belong to that engine.
 
 ## Flags you reach for most
 

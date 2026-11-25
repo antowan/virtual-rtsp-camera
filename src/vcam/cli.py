@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable, Iterator
+from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 import typer
+import yaml
 from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__, binaries
+from . import __version__, binaries, control_cli
 from . import service as _service
 from .cli_helpers import OverridesResolver, RunContext
 from .config import (
@@ -25,8 +29,9 @@ from .config import (
     find_default_config,
     format_validation_error,
     load_stack,
-    save_stack,
+    parse_stack_text,
 )
+from .config_store import ConfigStore, camera_fields, camera_nodes
 from .errors import (
     ConfigError,
     NTPError,
@@ -36,7 +41,7 @@ from .errors import (
     SupervisorError,
 )
 from .ffmpeg import build_publish_command, resolve_mode
-from .mediamtx import plan_instances, render_server_config_yaml
+from .mediamtx import needs_server, plan_instances, render_server_config_yaml
 from .models import (
     CAMERA_NAME_RE,
     CREDENTIAL_CHARS,
@@ -47,11 +52,9 @@ from .models import (
     CameraStack,
     ServerSpec,
     SimulationMode,
-    SimulationSpec,
     StreamMode,
     Transport,
     VideoCodec,
-    VideoSettings,
 )
 from .ntp import apply_offset, has_sys_time_cap, measure_offset, running_in_container
 from .pcap import backend_version as pcap_backend_version
@@ -90,6 +93,13 @@ ConfigOption = Annotated[
 HostOption = Annotated[
     str | None,
     typer.Option("--host", help="Bind address for the RTSP listener (default: 0.0.0.0)."),
+]
+OfflineOption = Annotated[
+    bool,
+    typer.Option(
+        "--offline",
+        help="Use only the YAML file, even if a `vcam run --control` instance owns it.",
+    ),
 ]
 DisplayHostOption = Annotated[
     str | None,
@@ -420,6 +430,26 @@ def run(
             ),
         ),
     ] = None,
+    control: Annotated[
+        bool | None,
+        typer.Option(
+            "--control/--no-control",
+            help=(
+                "Serve the authenticated control API (default: the config's "
+                "control.enabled). Inline camera changes last only until this process exits."
+            ),
+        ),
+    ] = None,
+    control_host: Annotated[
+        str | None,
+        typer.Option("--control-host", help="Control API bind address (default: 127.0.0.1)."),
+    ] = None,
+    control_port: Annotated[
+        int | None,
+        typer.Option(
+            "--control-port", min=0, max=65535, help="Control API port; 0 picks a free one."
+        ),
+    ] = None,
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Debug logging.")] = False,
 ) -> None:
     """Start the RTSP server and publish every camera. Runs until interrupted.
@@ -428,38 +458,55 @@ def run(
     vcam.yaml or vcam.yml in the current directory is used. Per-camera options
     below override the config for *every* camera in the stack.
     """
-    stack = _build_stack(config=config, source=source, name=name, cameras=camera)
+    controlled, config_path, revision, stack = _resolve_run_stack(
+        config=config, source=source, name=name, cameras=camera, control=control
+    )
+    overrides: dict[str, object] = {
+        "host": host,
+        "port": port,
+        "api_port": api_port,
+        "log_level": log_level,
+        "username": username,
+        "password": password,
+        "ntp_server": ntp_server,
+        "mode": mode,
+        "loop": loop,
+        "realtime": realtime,
+        "start_offset": start_offset,
+        "transport": transport,
+        "audio": audio,
+        "video": _video_overrides(resolution, fps, bitrate, codec, encoder, gop, preset),
+        "simulation": _simulation_overrides(
+            simulation,
+            noise_level,
+            simulation_interval,
+            simulation_duration,
+            simulation_filters,
+        ),
+    }
 
+    def effective(desired: CameraStack) -> CameraStack:
+        """The YAML stack as this run serves it: CLI overrides re-applied."""
+        result = desired.model_copy(deep=True)
+        OverridesResolver().apply_overrides(result, **overrides)  # type: ignore[arg-type]
+        if controlled:
+            result.control.enabled = True
+            if control_host is not None:
+                result.control.host = control_host
+            if control_port is not None:
+                result.control.port = control_port
+        return CameraStack.model_validate(result.model_dump())
+
+    declared = stack
     try:
-        _apply_overrides(
-            stack,
-            host=host,
-            port=port,
-            api_port=api_port,
-            log_level=log_level,
-            username=username,
-            password=password,
-            ntp_server=ntp_server,
-            mode=mode,
-            loop=loop,
-            realtime=realtime,
-            start_offset=start_offset,
-            transport=transport,
-            audio=audio,
-            video=_video_overrides(resolution, fps, bitrate, codec, encoder, gop, preset),
-            simulation=_simulation_overrides(
-                simulation,
-                noise_level,
-                simulation_interval,
-                simulation_duration,
-                simulation_filters,
-            ),
-        )
+        stack = effective(declared)
     except ValidationError as exc:
         raise _fail(f"invalid options:\n{format_validation_error(exc)}") from exc
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
 
-    if not stack.enabled_cameras:
-        raise _fail("no enabled cameras to serve")
+    if not controlled and not stack.enabled_cameras and not stack.enabled_replays:
+        raise _fail("no enabled cameras or replays to serve")
 
     if dry_run:
         _print_dry_run(stack, ffmpeg_log_level)
@@ -469,15 +516,20 @@ def run(
 
     _run_ntp_sync(stack.server.ntp_server)
 
-    try:
-        binary = binaries.resolve_binary(
-            mediamtx_binary,
-            version=mediamtx_version,
-            allow_download=download,
-            on_event=lambda message: console.print(f"[dim]{message}[/]"),
-        )
-    except binaries.BinaryError as exc:
-        raise _fail(str(exc)) from exc
+    # A replay-only stack serves its captures itself and starts no MediaMTX,
+    # so it must not need (or download) one.
+    binary: Path | None = None
+    # A controlled run can gain cameras later, so it always needs MediaMTX.
+    if controlled or needs_server(stack):
+        try:
+            binary = binaries.resolve_binary(
+                mediamtx_binary,
+                version=mediamtx_version,
+                allow_download=download,
+                on_event=lambda message: console.print(f"[dim]{message}[/]"),
+            )
+        except binaries.BinaryError as exc:
+            raise _fail(str(exc)) from exc
 
     temp_dir: str | None = None
     if work_dir is None:
@@ -506,9 +558,15 @@ def run(
         verify=context.verify,
         max_restarts=context.max_restarts,
         on_ready=lambda runtimes: _print_ready(context.stack, runtimes),
+        allow_empty=controlled,
     )
 
+    control_plane = None
     try:
+        if controlled:
+            control_plane = _start_control_plane(
+                supervisor, config_path, revision, stack, effective, declared
+            )
         raise typer.Exit(supervisor.run())
     except SupervisorError as exc:
         supervisor.shutdown()
@@ -516,8 +574,118 @@ def run(
     except KeyboardInterrupt:
         supervisor.shutdown()
     finally:
+        if control_plane is not None:
+            control_plane.close()
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _resolve_run_stack(
+    *,
+    config: Path | None,
+    source: Path | str | None,
+    name: str | None,
+    cameras: list[str] | None,
+    control: bool | None,
+) -> tuple[bool, Path | None, str | None, CameraStack]:
+    """Decide whether this run is controlled and load its declared stack.
+
+    Returns ``(controlled, config_path, revision, declared_stack)``. Inline
+    control has no YAML path; its revision tracks canonical declared JSON.
+    """
+    if source is not None or cameras:
+        return (
+            bool(control),
+            None,
+            None,
+            _build_stack(config=config, source=source, name=name, cameras=cameras),
+        )
+    path = config or find_default_config()
+    if path is None:
+        raise _fail("no config file found. Pass --config, or create one with `vcam init`.")
+    if control is False:
+        return False, path, None, _load_stack_or_exit(path)
+    try:
+        store = ConfigStore(path)
+        document = store.read()
+        # The controller re-reads the canonical target, so resolve relative
+        # media beside it from the start, not beside a symlink to it.
+        declared = parse_stack_text(document.text, store.path, allow_empty=True)
+    except ConfigError as exc:
+        if control:
+            raise _fail(str(exc)) from exc
+        # Keep the established error messages for uncontrolled runs.
+        return False, path, None, _load_stack_or_exit(path)
+    except ValidationError as exc:
+        if control:
+            raise _fail(f"invalid config {path}:\n{format_validation_error(exc)}") from exc
+        return False, path, None, _load_stack_or_exit(path)
+    if control or declared.control.enabled:
+        return True, path, document.revision, declared
+    return False, path, None, _load_stack_or_exit(path)
+
+
+class _ControlPlane:
+    def __init__(self, controller: Any, server: Any) -> None:
+        self.controller = controller
+        self.server = server
+
+    def close(self) -> None:
+        try:
+            self.server.stop()
+        finally:
+            logging.getLogger("vcam").removeHandler(self.controller.logs)
+            self.controller.withdraw_discovery()
+
+
+def _start_control_plane(
+    supervisor: Supervisor,
+    config_path: Path | None,
+    revision: str | None,
+    stack: CameraStack,
+    effective: Callable[[CameraStack], CameraStack],
+    declared: CameraStack,
+) -> _ControlPlane:
+    try:
+        from .control import Controller
+        from .control_api import ControlServer
+    except ImportError as exc:
+        raise _fail(
+            "the control API needs the optional 'control' extra "
+            "(from a source checkout: uv sync --extra control)"
+        ) from exc
+    controller = Controller(
+        supervisor,
+        config_path,
+        effective=effective,
+        spec=stack.control,
+        revision=revision,
+        declared=declared,
+    )
+    try:
+        server = ControlServer(controller)
+    except OSError as exc:
+        raise _fail(
+            f"cannot listen for the control API on {stack.control.host}:"
+            f"{stack.control.port}: {exc.strerror or exc}"
+        ) from exc
+    plane = _ControlPlane(controller, server)
+    with contextlib.ExitStack() as startup:
+        startup.callback(plane.close)
+        try:
+            controller.claim_ownership()
+            logging.getLogger("vcam").addHandler(controller.logs)
+            server.start()
+            controller.publish_discovery(server.endpoint, ca_file=stack.control.tls_cert)
+        except (OSError, RuntimeError) as exc:
+            raise _fail(str(exc)) from exc
+        console.print(
+            f"[bold]control API[/] {server.endpoint}/api/v1  "
+            f"[dim](token file: {controller.token_file})[/]"
+        )
+        supervisor.on_tick = controller.tick
+        startup.pop_all()
+        return plane
 
 
 def _build_stack(
@@ -738,6 +906,22 @@ def _print_camera_table(stack: CameraStack, host: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _output_revision(path: Path, force: bool) -> str | None:
+    if not path.exists():
+        return None
+    if not force:
+        raise _fail(f"{path} already exists (use --force to overwrite)")
+    try:
+        return ConfigStore(path).disk_revision()
+    except ConfigError as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _write_generated(stack: CameraStack, path: Path, expected: str | None) -> None:
+    with _offline_write(path):
+        ConfigStore(path).commit(dump_stack(stack), expected_revision=expected)
+
+
 @app.command("import-sim")
 def import_sim(
     manifest: Annotated[Path, typer.Argument(help="sim-streams.json (eais-sim-streams/1).")],
@@ -747,14 +931,13 @@ def import_sim(
     force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
 ) -> None:
     """Convert simulator streams into a camera stack, without probing or connecting."""
-    if output is not None and output.exists() and not force:
-        raise _fail(f"{output} already exists (use --force to overwrite)")
+    expected = _output_revision(output, force) if output is not None else None
     try:
         stack = import_sim_manifest(manifest)
         if output is None:
             print(dump_stack(stack), end="")
         else:
-            save_stack(stack, output)
+            _write_generated(stack, output, expected)
             console.print(f"wrote [bold]{output}[/]")
     except (ConfigError, OSError) as exc:
         raise _fail(str(exc)) from exc
@@ -770,10 +953,9 @@ def init(
     force: Annotated[bool, typer.Option("--force", help="Overwrite an existing file.")] = False,
 ) -> None:
     """Write a starter configuration file."""
-    if path.exists() and not force:
-        raise _fail(f"{path} already exists (use --force to overwrite)")
+    expected = _output_revision(path, force)
     stack = example_stack([Path(item).expanduser() for item in source] if source else None)
-    save_stack(stack, path)
+    _write_generated(stack, path, expected)
     console.print(f"wrote [bold]{path}[/]")
 
 
@@ -792,8 +974,7 @@ def generate(
     then asks you a few questions for each one and about the server.
     The result is written to PATH (default: cameras.yaml).
     """
-    if path.exists() and not force:
-        raise _fail(f"{path} already exists (use --force to overwrite)")
+    expected = _output_revision(path, force)
 
     scan_dir = (scan or Path.cwd()).resolve()
     if not scan_dir.is_dir():
@@ -927,7 +1108,7 @@ def generate(
         console.print(f"  [bold]{cam.name}[/]  ({cam.mode.value})  ← {Path(cam.source).name}")
     console.print()
 
-    save_stack(stack, path)
+    _write_generated(stack, path, expected)
     console.print(f"wrote [bold]{path}[/]\n")
     console.print(
         f"Run [bold]vcam run --config {path}[/] to start, "
@@ -986,53 +1167,179 @@ def add(
     gop: Annotated[
         int | None, typer.Option("--gop", help="Keyframe interval in frames when transcoding.")
     ] = None,
+    offline: OfflineOption = False,
+    endpoint: control_cli.EndpointOption = None,
+    token_file: control_cli.TokenFileOption = None,
+    ca_file: control_cli.CaFileOption = None,
+    as_json: control_cli.JsonOption = False,
+    wait: control_cli.WaitOption = True,
 ) -> None:
-    """Append a camera to an existing configuration file.
+    """Add a camera to a controlled engine or, offline, to its YAML file.
 
-    Only the most common per-camera settings are exposed here; edit the YAML
-    directly for the rest (audio, transport, realtime, preset, simulation timing).
+    With an explicit endpoint, file sources are paths on the engine host.
+    An endpoint failure never falls back to a local file.
     """
-    path = config or find_default_config()
-    if path is None:
+    remote = control_cli.target(config, endpoint, token_file, ca_file, offline=offline)
+    path = None if remote is not None else config or find_default_config()
+    if remote is None and path is None:
         raise _fail("no config file found. Create one with `vcam init`.")
-
-    try:
-        stack = load_stack(path)
-    except ConfigError as exc:
-        raise _fail(str(exc)) from exc
-
+    if remote is None and not wait:
+        raise _fail("--no-wait requires a running controlled engine")
     overrides = _video_overrides(resolution, fps, bitrate, codec, encoder, gop, None)
     try:
-        parsed_source = parse_source(source)
-        stack.cameras.append(
-            CameraSpec(
-                name=name or _source_name(parsed_source),
-                # Stored absolute: relative paths in a config resolve against the
-                # config directory, which is rarely the cwd `add` was run from.
-                source=parsed_source.resolve()
-                if isinstance(parsed_source, Path)
-                else parsed_source,
-                mode=mode,
-                start_offset=start_offset,
-                port=port,
-                video=VideoSettings(**overrides),  # type: ignore[arg-type]
-                simulation=SimulationSpec(mode=simulation),
+        camera_name = name or _source_name(source)
+        values = {
+            "name": camera_name,
+            "source": (
+                control_cli.engine_source(remote, source)
+                if remote is not None
+                else control_cli.absolute_source(source)
+            ),
+            "mode": mode.value,
+            "simulation": {"mode": simulation.value},
+            "video": overrides,
+            "start_offset": start_offset,
+            "port": port,
+        }
+        # The daemon validates an online camera on the filesystem that owns its source.
+        if remote is None:
+            values = CameraSpec.model_validate(values).model_dump(
+                mode="json", exclude_defaults=True
             )
-        )
-        CameraStack.model_validate(stack.model_dump())
     except ValidationError as exc:
         raise _fail(f"invalid camera definition:\n{format_validation_error(exc)}") from exc
     except ValueError as exc:
         raise _fail(f"invalid camera definition: {exc}") from exc
 
-    save_stack(stack, path)
-    console.print(f"added [bold]{stack.cameras[-1].name}[/] to {path}")
+    if remote is not None:
+        with control_cli._handled():
+            revision = remote.get("cameras")["revision"]
+            op = remote.write("POST", "cameras", values, revision=revision, wait=wait)
+        if as_json:
+            control_cli._emit(op)
+        else:
+            control_cli.print_added(camera_name, op)
+        return
+
+    assert path is not None
+    with _offline_write(path):
+        store = ConfigStore(path)
+        doc = store.read()
+        camera_nodes(doc.data).append(camera_fields(doc.data, values))
+        text = store.preview(doc)
+        parse_stack_text(text, path, allow_empty=True)
+        written = store.commit(text, expected_revision=doc.revision)
+    if as_json:
+        control_cli._emit(
+            {
+                "name": camera_name,
+                "path": str(path),
+                "revision": written.revision,
+                "config_persisted": True,
+                "applied": False,
+            }
+        )
+    else:
+        console.print(f"added [bold]{camera_name}[/] to {path} (file only)")
+
+
+@contextlib.contextmanager
+def _offline_write(path: Path) -> Iterator[None]:
+    """Refuse to edit a config that a controlled instance claims meanwhile."""
+    from .control import config_ownership
+
+    try:
+        with config_ownership(path.resolve()):
+            yield
+    except ConfigError as exc:
+        raise _fail(str(exc)) from exc
+    except SupervisorError as exc:
+        if isinstance(exc.__cause__, BlockingIOError):
+            raise _fail(f"a running `vcam run --control` owns {path}; use its control API") from exc
+        raise _fail(f"cannot verify config ownership: {exc}") from exc
+
+
+def _stack_streams(
+    stack: CameraStack, host: str | None, include_disabled: bool
+) -> list[dict[str, Any]]:
+    """RTSP endpoints in the control API's `streams` shape: cameras first, then replays."""
+    cameras = stack.cameras if include_disabled else stack.enabled_cameras
+    replays = stack.replays if include_disabled else stack.enabled_replays
+    return [
+        *(
+            {
+                "port": stack.effective_port(camera),
+                "name": camera.name,
+                "protocol": "rtsp",
+                "kind": "camera",
+                "url": stack.read_url(camera, host),
+            }
+            for camera in cameras
+        ),
+        *(
+            {
+                "port": replay.port,
+                "name": replay.name,
+                "protocol": "rtsp",
+                "kind": "replay",
+                "url": stack.replay_url(replay, host),
+            }
+            for replay in replays
+        ),
+    ]
+
+
+def _stack_listing(stack: CameraStack, host: str | None) -> dict[str, Any]:
+    """Declared cameras and replays in the control API's list shape (no runtime state offline)."""
+    return {
+        "cameras": [
+            {
+                "port": stack.effective_port(camera),
+                "name": camera.name,
+                "enabled": camera.enabled,
+                "url": stack.read_url(camera, host),
+                "source": display_source(camera.source),
+                "live": camera.is_live,
+                "sync_group": camera.sync_group,
+                "simulation": camera.simulation.mode.value,
+            }
+            for camera in stack.cameras
+        ],
+        "replays": [
+            {
+                "port": replay.port,
+                "name": replay.name,
+                "enabled": replay.enabled,
+                "url": stack.replay_url(replay, host),
+            }
+            for replay in stack.replays
+        ],
+    }
 
 
 @app.command("list")
-def list_cameras(config: ConfigOption = None, host: DisplayHostOption = None) -> None:
-    """Show the cameras and replays declared in a configuration file."""
+def list_cameras(
+    config: ConfigOption = None,
+    host: DisplayHostOption = None,
+    offline: OfflineOption = False,
+    endpoint: control_cli.EndpointOption = None,
+    token_file: control_cli.TokenFileOption = None,
+    ca_file: control_cli.CaFileOption = None,
+    as_json: control_cli.JsonOption = False,
+) -> None:
+    """Show the cameras and replays declared in a configuration file.
+
+    With a running controlled instance (discovered, or named with --endpoint),
+    shows its live camera state instead.
+    """
+    remote = control_cli.target(config, endpoint, token_file, ca_file, offline=offline)
+    if remote is not None:
+        control_cli.list_online(remote, host, as_json)
+        return
     stack = _load_stack_or_exit(config)
+    if as_json:
+        control_cli._emit(_stack_listing(stack, host))
+        return
     _print_camera_table(stack, host)
     _print_replay_table(stack, host)
 
@@ -1042,21 +1349,60 @@ def urls(
     config: ConfigOption = None,
     host: DisplayHostOption = None,
     all_cameras: Annotated[bool, typer.Option("--all", help="Include disabled cameras.")] = False,
+    offline: OfflineOption = False,
+    endpoint: control_cli.EndpointOption = None,
+    token_file: control_cli.TokenFileOption = None,
+    ca_file: control_cli.CaFileOption = None,
+    as_json: control_cli.JsonOption = False,
 ) -> None:
-    """Print one RTSP URL per line (handy for scripts and pipelines)."""
-    stack = _load_stack_or_exit(config)
-    cameras = stack.cameras if all_cameras else stack.enabled_cameras
-    for camera in cameras:
-        print(stack.read_url(camera, host))
-    replays = stack.replays if all_cameras else stack.enabled_replays
-    for replay in replays:
-        print(stack.replay_url(replay, host))
+    """Print one RTSP URL per line (handy for scripts and pipelines).
+
+    Offline URLs carry the configured credentials; a running engine's never do.
+    """
+    remote = control_cli.target(config, endpoint, token_file, ca_file, offline=offline)
+    if remote is not None:
+        control_cli.urls_online(remote, host, all_cameras, as_json)
+        return
+    streams = _stack_streams(_load_stack_or_exit(config), host, all_cameras)
+    if as_json:
+        control_cli._emit({"urls": [stream["url"] for stream in streams], "streams": streams})
+        return
+    for stream in streams:
+        print(stream["url"])
 
 
 @app.command()
-def show(config: ConfigOption = None) -> None:
-    """Print the fully resolved configuration as YAML."""
+def show(
+    config: ConfigOption = None,
+    offline: OfflineOption = False,
+    endpoint: control_cli.EndpointOption = None,
+    token_file: control_cli.TokenFileOption = None,
+    ca_file: control_cli.CaFileOption = None,
+    as_json: control_cli.JsonOption = False,
+) -> None:
+    """Print the fully resolved configuration as YAML.
+
+    With a running controlled instance (discovered, or named with --endpoint),
+    prints what it serves (secrets redacted). The offline file is shown as written.
+    """
+    remote = control_cli.target(config, endpoint, token_file, ca_file, offline=offline)
+    if remote is not None:
+        control_cli.show_online(remote, as_json)
+        return
     stack = _load_stack_or_exit(config)
+    if as_json:
+        path = config or find_default_config()
+        assert path is not None
+        resolved = yaml.safe_load(dump_stack(stack))
+        control_cli._emit(
+            {
+                "path": str(path.resolve()),
+                "declared": resolved,
+                "effective": resolved,
+                "provenance": {"declared": "file", "overridden": []},
+            }
+        )
+        return
     console.print(dump_stack(stack).rstrip())
 
 
@@ -1233,8 +1579,21 @@ def replay(
 @app.command()
 def probe(
     source: Annotated[str, typer.Argument(help="Video file or live URL to inspect.")],
+    config: control_cli.BackendConfigOption = None,
+    endpoint: control_cli.EndpointOption = None,
+    token_file: control_cli.TokenFileOption = None,
+    ca_file: control_cli.CaFileOption = None,
+    as_json: control_cli.JsonOption = False,
 ) -> None:
-    """Show how a source file will be handled (codec, size, fps, chosen mode)."""
+    """Show how a source file will be handled (codec, size, fps, chosen mode).
+
+    Runs on this machine. With --endpoint, $VCAM_ENDPOINT or --config it runs on
+    that engine instead, resolving the source there; it never falls back to local.
+    """
+    remote = control_cli.backend(config, endpoint, token_file, ca_file)
+    if remote is not None:
+        control_cli.probe_remote(remote, source, as_json)
+        return
     try:
         camera = CameraSpec(name="probe", source=source)
         info = probe_source(
@@ -1243,18 +1602,13 @@ def probe(
     except (ProbeError, ValueError) as exc:
         raise _fail(str(exc)) from exc
 
-    table = Table(title=str(info.path), title_justify="left")
-    table.add_column("property", style="bold")
-    table.add_column("value")
-    table.add_row("codec", info.codec or "-")
-    table.add_row("resolution", info.resolution or "-")
-    table.add_row("fps", f"{info.fps:.3f}" if info.fps else "-")
-    table.add_row("duration", f"{info.duration:.2f}s" if info.duration else "-")
-    table.add_row("bitrate", f"{info.bitrate // 1000} kbit/s" if info.bitrate else "-")
-    table.add_row("pixel format", info.pix_fmt or "-")
-    table.add_row("audio track", "yes" if info.has_audio else "no")
-    table.add_row("auto mode", resolve_mode(camera, info).value)
-    console.print(table)
+    fields = asdict(info)
+    del fields["path"]
+    fields["auto_mode"] = resolve_mode(camera, info).value
+    if as_json:
+        control_cli._emit(fields)
+    else:
+        control_cli.print_probe(display_source(camera.source), fields)
 
 
 @app.command()
@@ -1266,41 +1620,82 @@ def doctor(
         str,
         typer.Option("--mediamtx-version", help="Release to look for in the local cache."),
     ] = binaries.DEFAULT_VERSION,
+    config: control_cli.BackendConfigOption = None,
+    endpoint: control_cli.EndpointOption = None,
+    token_file: control_cli.TokenFileOption = None,
+    ca_file: control_cli.CaFileOption = None,
+    as_json: control_cli.JsonOption = False,
 ) -> None:
-    """Check that ffmpeg, ffprobe and MediaMTX are available. Never downloads."""
+    """Check that ffmpeg, ffprobe and MediaMTX are available. Never downloads.
+
+    Runs on this machine. With --endpoint, $VCAM_ENDPOINT or --config it checks
+    the host of that engine instead; it never falls back to this machine.
+    """
+    remote = control_cli.backend(config, endpoint, token_file, ca_file)
+    if remote is not None:
+        if mediamtx_binary is not None or mediamtx_version != binaries.DEFAULT_VERSION:
+            raise _fail(
+                "--mediamtx-binary and --mediamtx-version describe this machine, "
+                "so they cannot be used with a remote engine",
+                2,
+            )
+        control_cli.doctor_remote(remote, as_json)
+        return
+
     ok = True
+    tools: dict[str, bool] = {}
+
+    def say(line: str) -> None:
+        if not as_json:
+            console.print(line)
 
     for tool in ("ffmpeg", "ffprobe"):
         location = shutil.which(tool)
+        tools[tool] = location is not None
         if location:
-            console.print(f"[green]OK[/]   {tool}: {location}")
+            say(f"[green]OK[/]   {tool}: {location}")
         else:
             ok = False
-            console.print(f"[red]MISS[/] {tool}: not on PATH")
+            say(f"[red]MISS[/] {tool}: not on PATH")
 
     try:
         binary = binaries.resolve_binary(
             mediamtx_binary, version=mediamtx_version, allow_download=False
         )
-        console.print(f"[green]OK[/]   mediamtx: {binary}")
+        tools["mediamtx"] = True
+        say(f"[green]OK[/]   mediamtx: {binary}")
     except binaries.BinaryError:
-        console.print(
+        tools["mediamtx"] = False
+        say(
             f"[yellow]WARN[/] mediamtx: not installed "
             f"(will download {mediamtx_version} on first run, or use `vcam install-server`)"
         )
 
     try:
-        console.print(f"[dim]platform: {binaries.platform_slug()}[/]")
+        say(f"[dim]platform: {binaries.platform_slug()}[/]")
     except binaries.BinaryError as exc:
         ok = False
-        console.print(f"[red]MISS[/] {exc}")
+        say(f"[red]MISS[/] {exc}")
 
     # Capture replay is optional: report it, but never fail the check on it.
+    pcap: str | None = None
     try:
-        console.print(f"[green]OK[/]   pcap backend: {pcap_backend_version()}")
+        pcap = pcap_backend_version()
+        say(f"[green]OK[/]   pcap backend: {pcap}")
     except PcapError as exc:
-        console.print(f"[yellow]WARN[/] pcap backend: {exc}")
+        say(f"[yellow]WARN[/] pcap backend: {exc}")
 
+    if as_json:
+        # `ok` is the exit status: here MediaMTX is optional because it is downloaded on first run.
+        control_cli._emit({"ok": ok, "tools": tools, "pcap_backend": pcap})
+    else:
+        _print_toxiproxy_status()
+
+    if not ok:
+        raise typer.Exit(1)
+
+
+def _print_toxiproxy_status() -> None:
     # Chaos testing (Toxiproxy) is optional: report CLI and API if reachable.
     toxi_cli = shutil.which("toxiproxy-cli")
     toxi_api_running = False
@@ -1326,9 +1721,6 @@ def doctor(
             "[dim]INFO  toxiproxy: not detected (optional for TCP chaos testing; "
             "run `docker compose --profile chaos up -d`)[/]"
         )
-
-    if not ok:
-        raise typer.Exit(1)
 
 
 @app.command("install-server")
@@ -1382,6 +1774,7 @@ service_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(service_app, name="service")
+control_cli.register(app)
 
 _NameOption = Annotated[
     str,
@@ -1406,8 +1799,21 @@ def install(
     if path is None:
         raise _fail("no config file found; pass --config or create one with `vcam init`")
     try:
-        load_stack(path)
-    except ConfigError as exc:
+        stack = load_stack(path, allow_empty=True)
+        if not stack.control.enabled and not stack.cameras and not stack.replays:
+            raise ConfigError(f"{path} declares no cameras or replays")
+        if stack.control.enabled:
+            from importlib.util import find_spec
+
+            if find_spec("fastapi") is None or find_spec("uvicorn") is None:
+                raise ConfigError(
+                    "install VCAM with the control extra before enabling this service"
+                )
+            if stack.control.token_file is not None:
+                from .control import read_token_file
+
+                read_token_file(stack.control.token_file)
+    except (ConfigError, SupervisorError) as exc:
         raise _fail(str(exc)) from exc
     try:
         summary = _service.install(name, Path(path).expanduser().resolve())

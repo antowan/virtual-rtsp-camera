@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import socket
+import threading
 import time
 from pathlib import Path
 
@@ -69,6 +72,13 @@ def test_prepare_rejects_empty_stack(video_file: Path, fake_binary: Path, tmp_pa
     supervisor = make_supervisor(stack, fake_binary, tmp_path)
 
     with pytest.raises(SupervisorError, match="no enabled cameras"):
+        supervisor.prepare()
+
+
+def test_prepare_requires_mediamtx_to_serve_cameras(stack: CameraStack, tmp_path: Path) -> None:
+    supervisor = Supervisor(stack, None, work_dir=tmp_path / "work", verify=False)
+
+    with pytest.raises(SupervisorError, match="MediaMTX binary is required"):
         supervisor.prepare()
 
 
@@ -174,3 +184,60 @@ def test_managed_process_reports_failure_to_start(tmp_path: Path) -> None:
     assert process.start() is False
     assert process.running is False
     assert process.retry_at > 0
+
+
+@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups")
+def test_children_stay_in_vcams_process_group() -> None:
+    # launchd/systemd reap the job's process group when vcam dies; a child in
+    # its own session would survive and keep the RTSP/API ports bound.
+    process = ManagedProcess(name="mediamtx", command=["sleep", "30"], kind="server")
+    assert process.start()
+    try:
+        assert process.pid is not None
+        assert os.getpgid(process.pid) == os.getpgrp()
+    finally:
+        process.stop()
+
+
+# ---------------------------------------------------------------------------
+# stopping during startup
+# ---------------------------------------------------------------------------
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def test_stop_during_startup_exits_cleanly(video_file: Path, tmp_path: Path) -> None:
+    binary = tmp_path / "mediamtx-never-listens"
+    binary.write_text("#!/bin/sh\nexec sleep 60\n")
+    binary.chmod(0o755)
+    stack = CameraStack(cameras=[CameraSpec(name="a", source=video_file, port=_free_port())])
+    supervisor = make_supervisor(stack, binary, tmp_path)
+    supervisor.prepare()
+    threading.Timer(0.3, supervisor._stop.set).start()
+
+    started = time.monotonic()
+    try:
+        assert supervisor._serve() == 0
+    finally:
+        supervisor.shutdown()
+
+    assert time.monotonic() - started < 5  # not the 15 s MediaMTX port timeout
+    assert not any(server.running for server in supervisor.servers)
+
+
+def test_stop_cuts_stream_verification_short(
+    stack: CameraStack, fake_binary: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    supervisor = make_supervisor(stack, fake_binary, tmp_path)
+    supervisor.prepare()
+    threading.Timer(0.3, supervisor._stop.set).start()
+
+    started = time.monotonic()
+    supervisor._verify_streams(timeout=30)
+
+    assert time.monotonic() - started < 5
+    assert "not publishing yet" not in caplog.text

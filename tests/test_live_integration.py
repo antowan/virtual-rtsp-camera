@@ -339,3 +339,267 @@ def test_udp_source_read_timeout_and_forwarding(tmp_path: Path) -> None:
             thread.join(timeout=15)
     assert not thread.is_alive()
     assert not errors, errors
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _progress_frames(path: Path) -> int:
+    frames = [
+        int(line.split("=", 1)[1])
+        for line in path.read_text().splitlines()
+        if line.startswith("frame=") and line.split("=", 1)[1].isdigit()
+    ]
+    return frames[-1] if frames else 0
+
+
+def test_control_cli_adds_camera_while_running_without_disturbing_readers(
+    tmp_path: Path,
+) -> None:
+    """`vcam camera add` against `vcam run --control` must not touch cam1's reader."""
+    import random
+    import signal
+    import sys
+
+    if not shutil.which("ffmpeg"):
+        pytest.fail("ffmpeg is required for VCAM_LIVE_TESTS=1")
+    resolve_binary(allow_download=False)
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25",
+         "-t", "6", "-c:v", "libx264", "-g", "25", "-pix_fmt", "yuv420p", str(clip)],
+        check=True,
+        timeout=60,
+    )  # fmt: skip
+    rtsp, api, control = _free_port(), _free_port(), _free_port()
+    rtp = random.randrange(20000, 40000, 8)
+    config = tmp_path / "cameras.yaml"
+    config.write_text(
+        "# live control e2e\n"
+        f"server:\n  host: 127.0.0.1\n  rtsp_port: {rtsp}\n  api_port: {api}\n"
+        f"  rtp_port: {rtp}\n"
+        "cameras:\n  - name: cam1  # keep me\n    source: clip.mp4\n"
+    )
+    env = {**os.environ, "VCAM_STATE_DIR": str(tmp_path / "state")}
+    vcam = [sys.executable, "-m", "vcam"]
+
+    def cli(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [*vcam, *args, "-c", str(config)],
+            env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+        )  # fmt: skip
+
+    log = (tmp_path / "run.log").open("w")
+    engine = subprocess.Popen(
+        [*vcam, "run", "-c", str(config), "--control", "--control-port", str(control)],
+        env=env, stdout=log, stderr=subprocess.STDOUT, cwd=tmp_path,
+    )  # fmt: skip
+    reader = None
+    try:
+        descriptors = tmp_path / "state" / "control"
+        wait_until(lambda: any(descriptors.glob("*.json")), timeout=60)
+
+        def cam1_state() -> str:
+            shown = cli("camera", "get", "cam1")
+            return json.loads(shown.stdout)["camera"]["state"] if shown.returncode == 0 else ""
+
+        wait_until(lambda: cam1_state() == "running", timeout=60)
+        cam1 = json.loads(cli("camera", "get", "cam1").stdout)["camera"]
+        publisher_pid = cam1["runtime"]["pid"]
+        status = json.loads(cli("status", "--json").stdout)
+        server_pid = status["servers"][0]["pid"]
+        assert status["pid"] == engine.pid
+
+        progress = tmp_path / "reader.progress"
+        reader = subprocess.Popen(
+            ["ffmpeg", "-v", "error", "-rtsp_transport", "tcp", "-i",
+             f"rtsp://127.0.0.1:{rtsp}/cam1", "-f", "null", "-", "-progress", str(progress)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )  # fmt: skip
+        wait_until(lambda: progress.exists() and _progress_frames(progress) > 25)
+
+        added = cli("camera", "add", "clip.mp4", "--name", "cam2")
+        assert added.returncode == 0, added.stdout + added.stderr
+        before = _progress_frames(progress)
+
+        decode = subprocess.run(
+            ["ffmpeg", "-v", "error", "-rtsp_transport", "tcp", "-i",
+             f"rtsp://127.0.0.1:{rtsp}/cam2", "-frames:v", "30", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30,
+        )  # fmt: skip
+        assert decode.returncode == 0, decode.stderr
+        wait_until(lambda: _progress_frames(progress) > before + 25)
+        assert reader.poll() is None, "the unaffected reader was disconnected"
+        cam1 = json.loads(cli("camera", "get", "cam1").stdout)["camera"]
+        assert cam1["runtime"]["pid"] == publisher_pid
+        text = config.read_text()
+        assert "# keep me" in text and "name: cam2" in text
+
+        # The owned config refuses offline writers while the engine runs.
+        offline = cli("add", "clip.mp4", "--name", "cam3", "--offline")
+        assert offline.returncode != 0
+
+        # Persistent and transient changes must both leave cam1's reader alone.
+        for args in (("camera", "edit", "cam2", "--set", "start_offset=1"),
+                     ("camera", "stop", "cam2"), ("camera", "start", "cam2"),
+                     ("camera", "disable", "cam2"), ("camera", "enable", "cam2"),
+                     ("camera", "remove", "cam2")):  # fmt: skip
+            previous = config.read_bytes()
+            changed = cli(*args, "--json")
+            assert changed.returncode == 0, changed.stdout + changed.stderr
+            transient = args[1] in {"stop", "start"}
+            assert json.loads(changed.stdout)["config_persisted"] is not transient
+            if transient:
+                assert config.read_bytes() == previous
+            mark = _progress_frames(progress)
+            wait_until(lambda mark=mark: _progress_frames(progress) > mark + 25)
+            assert reader.poll() is None, f"reader disconnected by {args}"
+        cam1 = json.loads(cli("camera", "get", "cam1").stdout)["camera"]
+        assert cam1["runtime"]["pid"] == publisher_pid
+        final = json.loads(cli("status", "--json").stdout)
+        assert (
+            final["instance_id"] == status["instance_id"]
+            and final["servers"][0]["pid"] == server_pid
+        )
+        assert "name: cam2" not in config.read_text()
+    finally:
+        engine.send_signal(signal.SIGINT)
+        try:
+            assert engine.wait(timeout=30) == 0
+        finally:
+            if engine.poll() is None:
+                engine.kill()
+                engine.wait(timeout=5)
+            if reader is not None:
+                try:
+                    reader.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    reader.kill()
+                    reader.wait(timeout=5)
+            log.close()
+    assert not list((tmp_path / "state" / "control").glob("*.json"))
+
+
+def test_control_requires_confirmation_for_sync_reload_and_restores_it_after_restart(
+    tmp_path: Path,
+) -> None:
+    import sys
+
+    from captures import rtp_series, write_udp_capture
+    from vcam.control import read_token_file
+    from vcam.control_client import ControlClient, ControlClientError
+
+    pytest.importorskip("av")
+    resolve_binary(allow_download=False)
+    clip = tmp_path / "scene.mp4"
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=15",
+         "-t", "2", "-c:v", "libx264", "-x264-params",
+         "keyint=15:scenecut=0:open-gop=0:bframes=0", str(clip)],
+        check=True, timeout=30,
+    )  # fmt: skip
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        replay_port = reservation.getsockname()[1]
+        rtsp = _free_port()
+    write_udp_capture(tmp_path / "scene.pcap", packets=rtp_series(5))
+    config = tmp_path / "cameras.yaml"
+    prefix = (
+        f"control: {{enabled: true, port: 0}}\nserver: {{host: 127.0.0.1, rtsp_port: {rtsp}}}\n"
+    )
+    config.write_text(prefix + "cameras: []\n")
+    state = tmp_path / "state"
+    env = {**os.environ, "VCAM_STATE_DIR": str(state)}
+    identity = None
+    for launch in range(2):
+        with (tmp_path / f"run-{launch}.log").open("w+") as log:
+            daemon = subprocess.Popen(
+                [sys.executable, "-m", "vcam", "run", "-c", str(config)],
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                cwd=tmp_path,
+            )
+            try:
+                wait_until(
+                    lambda d=daemon: any((state / "control").glob("*.json")) or d.poll() is not None
+                )
+                assert daemon.poll() is None, (tmp_path / f"run-{launch}.log").read_text()
+                descriptor = json.loads(next((state / "control").glob("*.json")).read_text())
+                client = ControlClient(
+                    descriptor["endpoint"], token=read_token_file(Path(descriptor["token_file"]))
+                )
+                if launch == 0:
+                    identity = descriptor["instance_id"]
+                    config.write_text(
+                        prefix
+                        + "cameras:\n"
+                        + "".join(
+                            f"  - {{name: {name}, source: scene.mp4, sync_group: scene}}\n"
+                            for name in ("left", "right")
+                        )
+                        + "replays:\n"
+                        + f"  - {{name: capture, source: scene.pcap, port: {replay_port}}}\n"
+                    )
+                    plan = client.request("POST", "config/reload", {"preview": True})
+                    assert plan["disruptive"] and plan["reset_sync_groups"] == ["scene"]
+                    assert plan["restart_replays"] == [{"port": replay_port, "name": "capture"}]
+                    body = {"plan_id": plan["plan_id"]}
+                    with pytest.raises(ControlClientError) as denied:
+                        client.request("POST", "config/apply", body, revision=plan["base_revision"])
+                    assert denied.value.code == "disruption_not_acknowledged"
+                    assert client.request("GET", "cameras")["cameras"] == []
+                    op = client.request(
+                        "POST",
+                        "config/apply",
+                        {**body, "allow_disruption": True},
+                        revision=plan["base_revision"],
+                    )
+                    assert client.wait(op["id"], timeout=60)["applied"]
+                else:
+                    assert descriptor["instance_id"] != identity
+                wait_until(
+                    lambda c=client: c.request("GET", "status")["counts"]["running"] == 2,
+                    timeout=60,
+                )
+                group = client.request("GET", "sync-groups/scene")["sync_group"]
+                assert set(group["members"]) == {"left", "right"} and group["epoch_ns"]
+                replay = client.request("GET", f"replays/{replay_port}/capture")["replay"]
+                assert replay["state"] == "running"
+                with socket.create_connection(("127.0.0.1", replay_port), timeout=5) as listener:
+                    listener.sendall(
+                        f"DESCRIBE {replay['url']} RTSP/1.0\r\nCSeq: 1\r\n\r\n".encode()
+                    )
+                    with listener.makefile("rb") as response:
+                        assert response.readline().startswith(b"RTSP/1.0 200 ")
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-nostdin",
+                        "-v",
+                        "error",
+                        "-rtsp_transport",
+                        "tcp",
+                        "-i",
+                        f"rtsp://127.0.0.1:{rtsp}/left",
+                        "-frames:v",
+                        "5",
+                        "-f",
+                        "null",
+                        "-",
+                    ],
+                    check=True,
+                    timeout=20,
+                )
+            finally:
+                daemon.terminate()
+                try:
+                    assert daemon.wait(timeout=20) == 0
+                except subprocess.TimeoutExpired:
+                    daemon.kill()
+                    daemon.wait(timeout=5)
+                    raise
+        assert not list((state / "control").glob("*.json"))

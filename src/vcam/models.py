@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from enum import Enum
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -358,6 +359,82 @@ class IngestSpec(BaseModel):
         return self
 
 
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+class ControlSpec(BaseModel):
+    """Opt-in authenticated HTTP control API for a running `vcam run`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    host: str = Field(default="127.0.0.1", description="Bind address for the control API")
+    port: int = Field(default=8765, ge=0, le=65535, description="0 picks a free port")
+    allow_remote: bool = Field(
+        default=False, description="Required, with TLS, to bind a non-loopback address"
+    )
+    tls_cert: Path | None = None
+    tls_key: Path | None = None
+    token_file: Path | None = Field(
+        default=None, description="Existing owner-only bearer token file"
+    )
+    allowed_hosts: list[str] = Field(default_factory=list, description="Additional HTTP hostnames")
+    allowed_origins: list[str] = Field(
+        default_factory=list, description="Exact browser origins allowed to use the control API"
+    )
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _check_hosts(cls, values: list[str]) -> list[str]:
+        for host in values:
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                if not re.fullmatch(r"[a-zA-Z0-9.-]+", host):
+                    raise ValueError(
+                        "allowed_hosts must contain exact hosts without ports"
+                    ) from None
+        return [host.lower() for host in values]
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _check_origins(cls, values: list[str]) -> list[str]:
+        for origin in values:
+            parts = urlsplit(origin)
+            if (
+                parts.scheme not in {"http", "https"}
+                or not parts.hostname
+                or parts.port == 0
+                or parts.username is not None
+                or origin != f"{parts.scheme}://{parts.netloc}"
+                or any(c.isspace() or c in "*\\," for c in origin)
+            ):
+                raise ValueError("allowed_origins must contain exact HTTP(S) origins")
+        return values
+
+    @field_validator("tls_cert", "tls_key", "token_file")
+    @classmethod
+    def _expand(cls, value: Path | None) -> Path | None:
+        return value.expanduser() if value is not None else None
+
+    @model_validator(mode="after")
+    def _check_exposure(self) -> ControlSpec:
+        if (self.tls_cert is None) != (self.tls_key is None):
+            raise ValueError("control.tls_cert and control.tls_key must be set together")
+        if self.host not in LOOPBACK_HOSTS:
+            if not self.allow_remote:
+                raise ValueError(
+                    "control.host is not loopback: set control.allow_remote to expose it"
+                )
+            if self.tls_cert is None:
+                raise ValueError("a non-loopback control API requires tls_cert and tls_key")
+        return self
+
+    @property
+    def scheme(self) -> str:
+        return "https" if self.tls_cert is not None else "http"
+
+
 class CameraStack(BaseModel):
     """Top-level configuration: one server definition, its cameras and replays."""
 
@@ -365,6 +442,7 @@ class CameraStack(BaseModel):
 
     server: ServerSpec = Field(default_factory=ServerSpec)
     ingest: IngestSpec | None = None
+    control: ControlSpec = Field(default_factory=ControlSpec)
     cameras: list[CameraSpec] = Field(default_factory=list)
     replays: list[ReplaySpec] = Field(default_factory=list)
 

@@ -165,6 +165,21 @@ cameras:
 Full reference: [docs/configuration.md](docs/configuration.md) — ports, auth, health
 file, `start_offset`, legacy manifests, and the MediaMTX binary resolution order.
 
+### Control cameras while they stream
+
+```bash
+# Terminal 1: serve your config and enable the authenticated loopback API.
+uv run --extra control vcam run -c cameras.yaml --control
+
+# Terminal 2, in the same directory: add a stream without disconnecting other readers.
+.venv/bin/vcam add videos/door.mp4 --name door
+.venv/bin/vcam status
+```
+
+The first command owns the streams; exiting a client does not stop them.
+The [control API guide](docs/control-api.md) covers remote clients, the
+OpenAPI contract, and which changes persist in YAML.
+
 ### Live simulator streams
 
 ```bash
@@ -193,6 +208,7 @@ for authentication, timeout and synthetic-publisher verification.
 | [Clock sync](docs/clock-sync.md) | RTCP NTP timestamps, visible system-clock adjustment and skew testing |
 | [Synchronized playback](docs/synchronized-playback.md) | opt-in `vcam run` shared scene groups, compatible assets, isolated recovery and Docker usage |
 | [Shared-clock experiment](docs/sync-prototype.md) | original synthetic feasibility harness and diagnostic measurements |
+| [Control API](docs/control-api.md) | opt-in `vcam run --control`: add, edit, start/stop cameras on a running engine without touching other streams |
 | [Running as a service](docs/service.md) | systemd (Linux) and launchd (macOS) installation |
 | [Docker](docs/docker.md) | image details, compose, multi-arch builds, aarch64/Jetson |
 | [Cheat sheet](CHEATSHEET.md) | one-page command map |

@@ -33,13 +33,13 @@ _is_demo_needed() {
     # Explicit source/config flags present → pass through
     for arg in "$@"; do
         case "$arg" in
-            --config|-c|--source|-s|--camera) return 1 ;;
+            --config|--config=*|-c|--source|--source=*|-s|--camera|--camera=*) return 1 ;;
         esac
     done
 
     # Config file found on disk → pass through
     for name in "${CONFIG_NAMES[@]}"; do
-        [[ -f "/vcam/$name" ]] && return 1
+        [[ -f "$name" ]] && return 1
     done
 
     return 0
@@ -69,7 +69,8 @@ if _is_demo_needed "$@"; then
     _make_demo_video
     echo "[vcam-demo] no config found — starting demo camera at rtsp://0.0.0.0:8554/demo"
     echo "[vcam-demo] mount a config file at /vcam/cameras.yaml to use your own cameras."
-    exec vcam run --source "$DEMO_VIDEO" --name demo
+    if [[ "${1:-}" == run ]]; then shift; fi
+    exec vcam run --source "$DEMO_VIDEO" --name demo "$@"
 fi
 
 exec vcam "$@"

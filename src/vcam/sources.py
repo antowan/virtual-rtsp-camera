@@ -1,5 +1,6 @@
 """File and live input handling shared by models, FFmpeg and ffprobe."""
 
+import re
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -22,7 +23,10 @@ def parse_source(value: Path | str) -> Path | str:
         if parsed.scheme == "udp" and parsed.port is None:
             raise ValueError("UDP source URL requires a port")
         return value
-    return Path(value).expanduser()
+    try:
+        return Path(value).expanduser()
+    except RuntimeError as exc:
+        raise ValueError("cannot resolve the home directory in the source path") from exc
 
 
 def live_input_options(source: Path | str, timeout: float = LIVE_READ_TIMEOUT) -> list[str]:
@@ -37,4 +41,28 @@ def display_source(source: Path | str) -> str:
     if not is_live_source(source):
         return str(source)
     parsed = urlsplit(str(source))
-    return urlunsplit(parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[-1]))
+    return urlunsplit(
+        parsed._replace(
+            netloc=parsed.netloc.rsplit("@", 1)[-1],
+            # Source-specific query fields can carry arbitrary secret names.
+            query="[REDACTED]" if parsed.query else "",
+            fragment="",
+        )
+    )
+
+
+# Apostrophes are legal in URI userinfo; stopping there would leak the rest.
+_LOG_URL = re.compile(r"""(?:rtsp|udp)://[^\s"<>]+""")
+_LOG_AUTH = re.compile(r"(?i)\b(Bearer|Basic)\s+[^\s,;]+")
+
+
+def redact_text(text: str) -> str:
+    """Sanitize free-form child output before retaining or returning it."""
+
+    def safe_url(match: re.Match[str]) -> str:
+        try:
+            return display_source(match.group())
+        except ValueError:
+            return "[REDACTED]"
+
+    return _LOG_AUTH.sub(r"\1 [REDACTED]", _LOG_URL.sub(safe_url, text))

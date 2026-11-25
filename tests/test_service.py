@@ -380,6 +380,49 @@ def test_service_install_bad_config(
     assert result.exit_code == 1
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_empty_service_needs_control(
+    enabled: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_systemd: Any
+) -> None:
+    import importlib.util
+
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name in {"fastapi", "uvicorn"} else original(name),
+    )
+    config = tmp_path / "cameras.yaml"
+    config.write_text(f"control: {{enabled: {str(enabled).lower()}}}\ncameras: []\n")
+    result = invoke("service", "install", "-c", str(config))
+    base, calls = fake_systemd
+    unit = base / "cfg" / "systemd" / "user" / "vcam.service"
+    if enabled:
+        assert result.exit_code == 0, result.output
+        assert f"ExecStart=/usr/local/bin/vcam run -c {config}\n" in unit.read_text()
+    else:
+        assert result.exit_code != 0
+        assert "declares no cameras or replays" in result.output
+        assert not unit.exists() and not calls
+
+
+def test_service_missing_control_extra_does_not_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_systemd: Any
+) -> None:
+    import importlib.util
+
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: None if name == "uvicorn" else original(name)
+    )
+    config = tmp_path / "cameras.yaml"
+    config.write_text("control: {enabled: true}\ncameras: []\n")
+    result = invoke("service", "install", "-c", str(config))
+    assert result.exit_code != 0
+    assert "install VCAM with the control extra" in result.output
+    assert not fake_systemd[1]
+
+
 def test_service_install_unsupported_platform(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, video_file: Path
 ) -> None:
