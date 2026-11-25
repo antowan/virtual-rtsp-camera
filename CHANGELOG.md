@@ -27,6 +27,21 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-25
+
+### Added
+
+- `vcam run --control` starts an authenticated HTTP API for managing cameras
+  and watching engine events. The CLI can add, edit, start, or stop an
+  individual camera without restarting the other streams. Install `vcam[control]`
+  to enable the server; ordinary runs open no control listener.
+
+### Changed
+
+- The `sync` and `prototype` extras now require PyAV 17.1 or later in the
+  17.x series (previously 16.x). The `replay` extra now requires Scapy 2.8
+  or later. Neither library is required by the base CLI.
+
 ### Fixed
 
 - MediaMTX readiness checks no longer route loopback API calls through
@@ -309,7 +324,8 @@ separate qualification; these results are not a universal synchronization SLA.
 ---
 
 <!-- version diff links ────────────────────────────────────────────────────── -->
-[Unreleased]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/antowan/virtual-rtsp-camera/compare/v0.4.0...v0.4.1
